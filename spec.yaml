@@ -1,47 +1,4 @@
 # Naibunga Lower -- Human-Wildlife Conflict Report
-#
-# Built from "Naibunga Lower - HWC Report MRD". Events only: no patrols, no
-# trajectories. Modelled on nl-conservancy-management-report, which is the
-# reference for every chain shape here.
-#
-# THE ONE IDEA IN THIS SPEC
-#
-# There is no "conflict" event type. Conflict is a label derived from the
-# event plus its cause field, and it is derived ONCE, in `events_prepared`,
-# as the columns `is_conflict`, `conflict_type` and `species_h`. Every
-# section downstream reads those three columns instead of repeating the
-# cause test. That is what keeps the headline total, the species chart and
-# the hotspot map counting the same records the same way.
-#
-#   hwc_livestock_predation   always -- the event type IS the cause
-#   human_injury              Cause of injury = Human-wildlife conflict
-#   human_death               Cause         = Human-wildlife conflict
-#   crop_damage               Cause of damage = Wildlife
-#   infrastructure_damage     Cause of damage = Wildlife
-#   animal_carcass            Type of Death = Conflict
-#   sick_injured_animal       Type of Injury = Conflict
-#   poisoning                 Suspected motive = HWC retaliation
-#
-# SPECIES ARE HARMONISED BEFORE COUNTING
-#
-# The five conflict events do not agree on how to spell an animal. Human
-# Injury, Predation and Infrastructure damage use a 70-value list; Crop
-# damage has its own 9-value list spelled differently; Human Death's
-# "Species responsible" is free text. Unharmonised, one elephant becomes
-# three bars. `species_h` applies the CASE table in `events_prepared`.
-#
-# DATA MODEL -- verified against naibungalower.pamdas.org on 8 Nov 2026,
-# after the legacy migration and the deactivation of the 30 legacy types.
-# Counts then: predation 116, carcass 131 (88 elephants), human injury 35,
-# infrastructure 9, human death 8, crop damage 7, sick/injured 5,
-# POISONING 0. The poisoning widgets must render as placeholders.
-#
-# `process_events_details` maps event_details keys to their display TITLES,
-# so every json_extract below reads a title, and every value compared is a
-# display value ("Wildlife", not "wildlife"). Confirm the comparisons in
-# `events_prepared` on the first live run -- they are the one thing a title
-# change would break silently.
-
 id: nl_hwc_report
 requirements:
 - name: ecoscope-platform
@@ -61,31 +18,6 @@ rjsf-overrides:
       opacity: 1
     - url: https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
       opacity: 0.5
-    # The report template is fetched from Google Drive at run time, per
-    # Rodney 8 Nov 2026.
-    #
-    # VERIFIED 8 Nov 2026 against this exact URL, fetched with credentials
-    # OMITTED -- the state the workflow runner is in:
-    #   HTTP 200, 38,609 bytes, magic "PK\x03\x04", i.e. a real .docx and
-    #   not Google's sign-in page. Drive stores it as a .docx blob
-    #   (mimeType ...wordprocessingml.document), NOT converted to a native
-    #   Google Doc, so the docxtpl {%tc %} / {%tr %} table tags survive.
-    #   Sharing is `anyoneWithLink: reader`.
-    #
-    # IF IT STOPS WORKING, check those three things in that order: the share
-    # setting first, then that the file is still a .docx rather than a
-    # converted Doc, then the id.
-    #
-    # Two standing costs of this choice:
-    #   1. anyone with the link can read the template;
-    #   2. a published report is not reproducible -- the Drive copy can be
-    #      edited after the report was issued and nothing records that.
-    # resources/templates/ holds the editable source, the test cases point
-    # at it by relative path, and dev/build_report_template.py builds both.
-    # Rebuild and re-upload together or the two drift apart.
-    # The URL is now pinned in the Word Report task's partial, so it is not
-    # a form field any more.
-
 task-instance-defaults:
   skipif:
     conditions:
@@ -175,17 +107,7 @@ workflow:
       - geometry
       - time
 
-  # The whole report rests on this query. It adds three derived columns and
-  # nothing downstream re-derives them.
-  #
-  #   is_conflict    1 when this record is a conflict incident
-  #   conflict_type  the label shown on every chart and in the legend
-  #   species_h      the harmonised species responsible
-  #
-  # report_time follows the same COALESCE rule as the management report:
-  # the event's own incident date where the type records one, otherwise ER
-  # event time. Human Death, Predation, Animal Carcass and Sick/Injured have
-  # no incident-date field, so they fall back -- say so on the dashboard.
+
   - name: Prepare and Label Events
     id: events_prepared
     task: apply_sql_query
