@@ -1,0 +1,120 @@
+# All cases are mock-io with SYNTHETIC fixtures from
+# dev/build_mock_io.py. Real Naibunga event data is sensitive
+# and is never committed -- the sample it was modelled on lives in gitignored
+# .scratch/ and nowhere else.
+#
+# The events fixture serves both get_events and process_events_details, which
+# are both io-tagged, so both are overridden to the same file.
+#
+# No case sets template_path: every one inherits the Google Drive URL pinned
+# in spec.yaml, so each run fetches the live template. That is deliberate --
+# it is the same artifact a real run uses, so a test passing here means the
+# template on Drive actually renders. The cost is that the cases need network
+# and will fail if the Drive share changes; dev/check_template_sync.py is what
+# tells you the template has drifted from this repo.
+#
+# No live case yet: it needs the Naibunga connection name and a confirmation
+# that the event-type slugs and the display titles in events_prepared match
+# the instance.
+
+base:
+  name: Base case (two months, synthetic fixtures)
+  description: >-
+    Untouched-form defaults over Oct-Nov 2026. Exercises all ten MRD sections,
+    the derived conflict label across all eight event types, species
+    harmonisation (the same animal spelled three ways must give one bar), the
+    incident-collection rule (three events at Loshaiki count as one incident
+    while still counting their own casualties), and the Word report with map
+    and chart figures. One view: there is no grouper.
+  mock_io: true
+  mock_io_overrides:
+    ecoscope.platform.tasks.io.get_events: mock-io/events.example-return.parquet
+    ecoscope.platform.tasks.io.process_events_details: mock-io/events.example-return.parquet
+  params:
+    workflow_details:
+      name: "Naibunga Lower HWC Report"
+      description: "Human-wildlife conflict incidents, losses and response"
+    prepared_by:
+      var: "Ecoscope"
+    er_client_name:
+      data_source:
+        name: "naibunga"
+    time_range:
+      since: "2026-10-01T00:00:00"
+      until: "2026-11-30T23:59:59"
+      timezone:
+        label: "(GMT+03:00) Nairobi"
+        tzCode: "Africa/Nairobi"
+        name: "East Africa Time"
+        utc: "+03:00"
+    base_map_defs:
+      base_maps:
+        - url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"
+          opacity: 1
+        - url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+          opacity: 0.5
+
+no_poisoning:
+  name: Naibunga as it actually is (no poisoning records)
+  description: >-
+    The real shape of the instance on 8 Nov 2026 - every conflict event type
+    present except Poisoning, which has zero records. Guards the slot that
+    would otherwise vanish from the layout: the Poisoning Events card must
+    render and read 0, not disappear.
+  mock_io: true
+  mock_io_overrides:
+    ecoscope.platform.tasks.io.get_events: mock-io/events-no-poisoning.example-return.parquet
+    ecoscope.platform.tasks.io.process_events_details: mock-io/events-no-poisoning.example-return.parquet
+  params:
+    workflow_details:
+      name: "Naibunga Lower HWC Report"
+      description: "No poisoning records in the period"
+    prepared_by:
+      var: "Ecoscope"
+    er_client_name:
+      data_source:
+        name: "naibunga"
+    time_range:
+      since: "2026-10-01T00:00:00"
+      until: "2026-10-31T23:59:59"
+      timezone:
+        label: "(GMT+03:00) Nairobi"
+        tzCode: "Africa/Nairobi"
+        name: "East Africa Time"
+        utc: "+03:00"
+    base_map_defs:
+      base_maps:
+        - url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"
+          opacity: 1
+
+empty:
+  name: Empty period (no events at all)
+  description: >-
+    Zero-row fixture: the skip chains must hold, every widget renders as a
+    placeholder rather than vanishing, and the Word report still renders with
+    "No records for this period." in each section.
+  mock_io: true
+  mock_io_overrides:
+    ecoscope.platform.tasks.io.get_events: mock-io/events-empty.example-return.parquet
+    ecoscope.platform.tasks.io.process_events_details: mock-io/events-empty.example-return.parquet
+  params:
+    workflow_details:
+      name: "Naibunga Lower HWC Report"
+      description: "Empty period"
+    prepared_by:
+      var: "Ecoscope"
+    er_client_name:
+      data_source:
+        name: "naibunga"
+    time_range:
+      since: "2026-10-01T00:00:00"
+      until: "2026-10-31T23:59:59"
+      timezone:
+        label: "(GMT+03:00) Nairobi"
+        tzCode: "Africa/Nairobi"
+        name: "East Africa Time"
+        utc: "+03:00"
+    base_map_defs:
+      base_maps:
+        - url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"
+          opacity: 1
