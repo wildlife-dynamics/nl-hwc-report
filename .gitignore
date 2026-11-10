@@ -165,3 +165,7 @@ cython_debug/
 .tmp
 .DS_Store
 .claude
+
+# Planning artifacts and local data pulls. Real EarthRanger data never leaves
+# this directory -- fixtures committed to the repo are synthetic.
+.scratch
