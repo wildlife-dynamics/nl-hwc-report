@@ -169,3 +169,13 @@ cython_debug/
 # Planning artifacts and local data pulls. Real EarthRanger data never leaves
 # this directory -- fixtures committed to the repo are synthetic.
 .scratch
+
+# The Word template is a BUILD ARTEFACT of dev/build_report_template.py, and
+# the workflow fetches it from the Google Drive URL pinned in spec.yaml at run
+# time -- never from here. Committing it would add a second copy that silently
+# disagrees with Drive. Build it locally, upload it, and verify with
+# dev/check_template_sync.py.
+#
+# resources/images/ is NOT ignored: the two logos are source assets that
+# build_report_template.py embeds, not artefacts.
+resources/templates/

@@ -1,15 +1,17 @@
 # All cases are mock-io with SYNTHETIC fixtures from
-# dev/fixtures/build_hwc_fixtures.py. Real Naibunga event data is sensitive
+# dev/build_mock_io.py. Real Naibunga event data is sensitive
 # and is never committed -- the sample it was modelled on lives in gitignored
 # .scratch/ and nowhere else.
 #
 # The events fixture serves both get_events and process_events_details, which
 # are both io-tagged, so both are overridden to the same file.
 #
-# template_path resolves from the inner package dir, so the cases point at
-# the repo copy of the template. The FORM default is the Google Drive URL --
-# the cases deliberately do not exercise it, because a test that fails when
-# someone edits a Drive share is not a test.
+# No case sets template_path: every one inherits the Google Drive URL pinned
+# in spec.yaml, so each run fetches the live template. That is deliberate --
+# it is the same artifact a real run uses, so a test passing here means the
+# template on Drive actually renders. The cost is that the cases need network
+# and will fail if the Drive share changes; dev/check_template_sync.py is what
+# tells you the template has drifted from this repo.
 #
 # No live case yet: it needs the Naibunga connection name and a confirmation
 # that the event-type slugs and the display titles in events_prepared match
@@ -25,8 +27,8 @@ base:
     figures.
   mock_io: true
   mock_io_overrides:
-    ecoscope.platform.tasks.io.get_events: dev/fixtures/events.example-return.parquet
-    ecoscope.platform.tasks.io.process_events_details: dev/fixtures/events.example-return.parquet
+    ecoscope.platform.tasks.io.get_events: mock-io/events.example-return.parquet
+    ecoscope.platform.tasks.io.process_events_details: mock-io/events.example-return.parquet
   params:
     workflow_details:
       name: "Naibunga Lower HWC Report"
@@ -58,8 +60,8 @@ no_poisoning:
     render and read 0, not disappear.
   mock_io: true
   mock_io_overrides:
-    ecoscope.platform.tasks.io.get_events: dev/fixtures/events-no-poisoning.example-return.parquet
-    ecoscope.platform.tasks.io.process_events_details: dev/fixtures/events-no-poisoning.example-return.parquet
+    ecoscope.platform.tasks.io.get_events: mock-io/events-no-poisoning.example-return.parquet
+    ecoscope.platform.tasks.io.process_events_details: mock-io/events-no-poisoning.example-return.parquet
   params:
     workflow_details:
       name: "Naibunga Lower HWC Report"
@@ -88,8 +90,8 @@ empty:
     "No records for this period." in each section.
   mock_io: true
   mock_io_overrides:
-    ecoscope.platform.tasks.io.get_events: dev/fixtures/events-empty.example-return.parquet
-    ecoscope.platform.tasks.io.process_events_details: dev/fixtures/events-empty.example-return.parquet
+    ecoscope.platform.tasks.io.get_events: mock-io/events-empty.example-return.parquet
+    ecoscope.platform.tasks.io.process_events_details: mock-io/events-empty.example-return.parquet
   params:
     workflow_details:
       name: "Naibunga Lower HWC Report"
