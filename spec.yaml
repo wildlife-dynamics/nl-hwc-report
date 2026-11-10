@@ -1,12 +1,2075 @@
-id:  # Unique workflow identifier (kebab-case)
-requirements: # Package dependencies with channels
-  - name: ecoscope-workflows-core
-    version: "0.18.0"
-    channel: https://repo.prefix.dev/ecoscope-workflows/
+# Naibunga Lower -- Human-Wildlife Conflict Report
+#
+# Built from "Naibunga Lower - HWC Report MRD". Events only: no patrols, no
+# trajectories. Modelled on nl-conservancy-management-report, which is the
+# reference for every chain shape here.
+#
+# THE ONE IDEA IN THIS SPEC
+#
+# There is no "conflict" event type. Conflict is a label derived from the
+# event plus its cause field, and it is derived ONCE, in `events_prepared`,
+# as the columns `is_conflict`, `conflict_type` and `species_h`. Every
+# section downstream reads those three columns instead of repeating the
+# cause test. That is what keeps the headline total, the species chart and
+# the hotspot map counting the same records the same way.
+#
+#   hwc_livestock_predation   always -- the event type IS the cause
+#   human_injury              Cause of injury = Human-wildlife conflict
+#   human_death               Cause         = Human-wildlife conflict
+#   crop_damage               Cause of damage = Wildlife
+#   infrastructure_damage     Cause of damage = Wildlife
+#   animal_carcass            Type of Death = Conflict
+#   sick_injured_animal       Type of Injury = Conflict
+#   poisoning                 Suspected motive = HWC retaliation
+#
+# SPECIES ARE HARMONISED BEFORE COUNTING
+#
+# The five conflict events do not agree on how to spell an animal. Human
+# Injury, Predation and Infrastructure damage use a 70-value list; Crop
+# damage has its own 9-value list spelled differently; Human Death's
+# "Species responsible" is free text. Unharmonised, one elephant becomes
+# three bars. `species_h` applies the CASE table in `events_prepared`.
+#
+# DATA MODEL -- verified against naibungalower.pamdas.org on 8 Nov 2026,
+# after the legacy migration and the deactivation of the 30 legacy types.
+# Counts then: predation 116, carcass 131 (88 elephants), human injury 35,
+# infrastructure 9, human death 8, crop damage 7, sick/injured 5,
+# POISONING 0. The poisoning widgets must render as placeholders.
+#
+# `process_events_details` maps event_details keys to their display TITLES,
+# so every json_extract below reads a title, and every value compared is a
+# display value ("Wildlife", not "wildlife"). Confirm the comparisons in
+# `events_prepared` on the first live run -- they are the one thing a title
+# change would break silently.
 
-# List of tasks in execution order
+id: nl_hwc_report
+requirements:
+- name: ecoscope-platform
+  version: '>=2.28.0, <2.29.0'
+  channel: https://repo.prefix.dev/ecoscope-workflows/
+- name: ecoscope-workflows-ext-custom
+  version: 0.1.5
+  channel: https://repo.prefix.dev/ecoscope-workflows-custom/
+- name: pydeck
+  version: 0.9.2
+  channel: conda-forge
+
+rjsf-overrides:
+  properties:
+    base_map_defs.properties.base_maps.default:
+    - url: https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}
+      opacity: 1
+    - url: https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
+      opacity: 0.5
+    # The report template is fetched from Google Drive at run time, per
+    # Rodney 8 Nov 2026.
+    #
+    # VERIFIED 8 Nov 2026 against this exact URL, fetched with credentials
+    # OMITTED -- the state the workflow runner is in:
+    #   HTTP 200, 38,609 bytes, magic "PK\x03\x04", i.e. a real .docx and
+    #   not Google's sign-in page. Drive stores it as a .docx blob
+    #   (mimeType ...wordprocessingml.document), NOT converted to a native
+    #   Google Doc, so the docxtpl {%tc %} / {%tr %} table tags survive.
+    #   Sharing is `anyoneWithLink: reader`.
+    #
+    # IF IT STOPS WORKING, check those three things in that order: the share
+    # setting first, then that the file is still a .docx rather than a
+    # converted Doc, then the id.
+    #
+    # Two standing costs of this choice:
+    #   1. anyone with the link can read the template;
+    #   2. a published report is not reproducible -- the Drive copy can be
+    #      edited after the report was issued and nothing records that.
+    # resources/templates/ holds the editable source, the test cases point
+    # at it by relative path, and dev/build_report_template.py builds both.
+    # Rebuild and re-upload together or the two drift apart.
+    # The URL is now pinned in the Word Report task's partial, so it is not
+    # a form field any more.
+
+task-instance-defaults:
+  skipif:
+    conditions:
+    - any_is_empty_df
+    - any_dependency_skipped
 workflow:
-  - name:  # Display name used for the configuration form UI
-    description:  # Description used for the configuration form
-    id:  # Unique task identifier (snake_case)
-    task:  # Function name from task library
+- name: Workflow Details
+  id: workflow_details
+  task: set_workflow_details
+- name: Data Source
+  id: er_client_name
+  task: set_er_connection
+- name: Time Range
+  id: time_range
+  task: set_time_range
+  partial:
+    time_format: '%d %b %Y'
+- name: Extract Timezone
+  id: get_timezone
+  task: get_timezone_from_time_range
+  partial:
+    time_range: ${{ workflow.time_range.return }}
+- title: Report Details
+  type: task-group
+  description: Shown on the cover of the Word report.
+  tasks:
+  - name: Prepared By
+    id: prepared_by
+    task: set_string_var
+    partial:
+      var: Ecoscope   # pinned: not shown in the run form
+- name: Base Maps
+  id: base_map_defs
+  task: set_base_maps
+- name: Group by Month
+  id: groupers
+  task: set_groupers
+  partial:
+    groupers:
+    - temporal_index: '%Y-%m'
+
+- title: Fetch Events
+  type: task-group
+  description: Every event in the period; each section selects its own types in SQL.
+  tasks:
+  - name: Get Events
+    id: events_raw
+    task: get_events
+    partial:
+      client: ${{ workflow.er_client_name.return }}
+      time_range: ${{ workflow.time_range.return }}
+      event_types: []
+      event_columns: null
+      event_states: null
+      include_null_geometry: true
+      raise_on_empty: false
+      include_details: true
+      include_updates: false
+      include_related_events: false
+      include_display_values: true
+      force_point_geometry: true
+  - name: Process Event Details
+    id: events_details
+    task: process_events_details
+    partial:
+      df: ${{ workflow.events_raw.return }}
+      client: ${{ workflow.er_client_name.return }}
+      map_to_titles: true
+      ordered: true
+  - name: Events or Empty Frame
+    id: events_safe
+    task: concat_dataframes
+    skipif:
+      conditions:
+      - never
+    partial:
+      dfs:
+      - ${{ workflow.events_details.return }}
+      reset_index: true
+      ensure_columns:
+      - id
+      - serial_number
+      - event_type
+      - event_type_display
+      - event_category
+      - event_details
+      - geometry
+      - time
+
+  # The whole report rests on this query. It adds three derived columns and
+  # nothing downstream re-derives them.
+  #
+  #   is_conflict    1 when this record is a conflict incident
+  #   conflict_type  the label shown on every chart and in the legend
+  #   species_h      the harmonised species responsible
+  #
+  # report_time follows the same COALESCE rule as the management report:
+  # the event's own incident date where the type records one, otherwise ER
+  # event time. Human Death, Predation, Animal Carcass and Sick/Injured have
+  # no incident-date field, so they fall back -- say so on the dashboard.
+  - name: Prepare and Label Events
+    id: events_prepared
+    task: apply_sql_query
+    skipif:
+      conditions: &deps
+      - any_dependency_skipped
+    partial:
+      df: ${{ workflow.events_safe.return }}
+      query: |
+        SELECT id, serial_number, event_type, event_type_display, event_category,
+               event_details, geometry,
+
+               strftime('%Y-%m-%dT%H:%M:%SZ', COALESCE(
+                 CASE
+                   WHEN event_type IN ('human_injury', 'crop_damage',
+                        'infrastructure_damage') THEN json_extract(event_details, '$."Incident date & time"')
+                   WHEN event_type = 'poisoning' THEN COALESCE(
+                        json_extract(event_details, '$."Date & Time"'),
+                        json_extract(event_details, '$."Date & time"'))
+                 END,
+                 time)) AS report_time,
+
+               CASE
+                 WHEN event_type = 'hwc_livestock_predation' THEN 1
+                 WHEN event_type = 'human_injury'
+                      AND json_extract(event_details, '$."Cause of injury"') = 'Human-wildlife conflict' THEN 1
+                 WHEN event_type = 'human_death'
+                      AND json_extract(event_details, '$."Cause"') = 'Human-wildlife conflict' THEN 1
+                 WHEN event_type IN ('crop_damage', 'infrastructure_damage')
+                      AND json_extract(event_details, '$."Cause of damage"') = 'Wildlife' THEN 1
+                 WHEN event_type = 'animal_carcass'
+                      AND json_extract(event_details, '$."Type of Death"') LIKE 'Conflict%' THEN 1
+                 -- the live choice label is "Conflict - fill in relevant HWC form"
+                 WHEN event_type = 'sick_injured_animal'
+                      AND json_extract(event_details, '$."Type of Injury"') LIKE 'Conflict%' THEN 1
+                 WHEN event_type = 'poisoning'
+                      AND json_extract(event_details, '$."Suspected motive"') = 'HWC retaliation' THEN 1
+                 ELSE 0
+               END AS is_conflict,
+
+               CASE event_type
+                 WHEN 'hwc_livestock_predation' THEN 'Livestock predation'
+                 WHEN 'human_injury'            THEN 'Human injury'
+                 WHEN 'human_death'             THEN 'Human death'
+                 WHEN 'crop_damage'             THEN 'Crop damage'
+                 WHEN 'infrastructure_damage'   THEN 'Infrastructure damage'
+                 WHEN 'animal_carcass'          THEN 'Wildlife death'
+                 WHEN 'sick_injured_animal'     THEN 'Wildlife injury'
+                 WHEN 'poisoning'               THEN 'Poisoning'
+                 ELSE event_type_display
+               END AS conflict_type,
+
+               -- species_h is the animal RESPONSIBLE. animal_h is the animal that
+               -- died or was hurt (Carcass, Sick / Injured), kept apart so a dead
+               -- zebra never reads as a species responsible.
+               CASE WHEN event_type IN ('animal_carcass', 'sick_injured_animal') THEN 'Unknown' ELSE sp_h END AS species_h,
+               CASE WHEN event_type IN ('animal_carcass', 'sick_injured_animal') THEN sp_h END AS animal_h,
+
+               -- Carcass and Sick / Injured split the cause into one field per type
+               -- of death or injury. The un-suffixed names are the legacy forms.
+               COALESCE(json_extract(event_details, '$."Cause of Death (CONFLICT)"'),
+                        json_extract(event_details, '$."Cause of Injury (CONFLICT)"'),
+                        json_extract(event_details, '$."Cause of Death (POACHED)"'),
+                        json_extract(event_details, '$."Cause of Injury (POACHED)"'),
+                        json_extract(event_details, '$."Cause of Death (PAC)"'),
+                        json_extract(event_details, '$."Cause of Injury (PAC)"'),
+                        json_extract(event_details, '$."Cause of Death (NATURAL)"'),
+                        json_extract(event_details, '$."Cause of Injury (NATURAL)"'),
+                        json_extract(event_details, '$."Cause of Injury (UNKNOWN)"'),
+                        json_extract(event_details, '$."Cause of Death"'),
+                        json_extract(event_details, '$."Cause of Injury"')) AS wl_cause,
+
+               -- Crop Damage drops the question mark from both retaliation titles.
+               CASE WHEN COALESCE(json_extract(event_details, '$."Retaliation action taken?"'),
+                                  json_extract(event_details, '$."Retaliation action taken"'))
+                         IN (1, 'true', 'True', 'Yes') THEN 1 ELSE 0 END AS ret_taken,
+               CASE WHEN COALESCE(json_extract(event_details, '$."Retaliation action threatened?"'),
+                                  json_extract(event_details, '$."Retaliation action threatened"'))
+                         IN (1, 'true', 'True', 'Yes') THEN 1 ELSE 0 END AS ret_threatened,
+
+               -- Multi-selects arrive as JSON arrays. Flatten to "a, b" for display.
+               NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CAST(COALESCE(
+                 json_extract(event_details, '$."Evidence of retaliation?"'),
+                 json_extract(event_details, '$."Evidence of retaliation"')) AS TEXT),
+                 '","', ', '), '["', ''), '"]', ''), '[]', '')), '') AS ret_evidence,
+               NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CAST(COALESCE(
+                 json_extract(event_details, '$."Action"'),
+                 json_extract(event_details, '$."Action taken"'),
+                 json_extract(event_details, '$."Action Taken"')) AS TEXT),
+                 '","', ', '), '["', ''), '"]', ''), '[]', '')), '') AS action_txt
+
+        FROM (
+          SELECT *,
+                 CASE
+                   WHEN sp2 IS NULL OR sp2 = '' THEN 'Unknown'
+                   WHEN LOWER(sp2) IN ('baboon, olive', 'baboon olive', 'olive baboon') THEN 'Olive Baboon'
+                   WHEN LOWER(sp2) IN ('hyena, spotted', 'hyena spotted', 'spotted hyena') THEN 'Spotted Hyena'
+                   WHEN LOWER(sp2) IN ('hyena, striped', 'hyena striped', 'striped hyena') THEN 'Striped Hyena'
+                   WHEN LOWER(sp2) IN ('zebra, burchells', 'burchells zebra') THEN 'Burchells Zebra'
+                   WHEN LOWER(sp2) IN ('zebra, grevys', 'grevys zebra') THEN 'Grevys Zebra'
+                   WHEN LOWER(sp2) IN ('gazelle, grants', 'grants gazelle') THEN 'Grants Gazelle'
+                   WHEN LOWER(sp2) IN ('gazelle, thompsons', 'thompsons gazelle') THEN 'Thompsons Gazelle'
+                   WHEN LOWER(sp2) IN ('kudu, lesser', 'lesser kudu') THEN 'Lesser Kudu'
+                   WHEN LOWER(sp2) IN ('kudu, greater', 'greater kudu') THEN 'Greater Kudu'
+                   WHEN LOWER(sp2) IN ('jackal, side striped', 'side striped jackal', 'side-striped jackal') THEN 'Side-striped Jackal'
+                   WHEN LOWER(sp2) IN ('jackal, black backed', 'black backed jackal', 'black-backed jackal') THEN 'Black-backed Jackal'
+                   ELSE UPPER(SUBSTR(sp2, 1, 1)) || SUBSTR(sp2, 2)
+                 END AS sp_h
+          FROM (
+            -- "Hyena - Spotted" -> "Spotted Hyena"
+            SELECT *,
+                   CASE WHEN INSTR(sp1, ' - ') > 0
+                        THEN TRIM(SUBSTR(sp1, INSTR(sp1, ' - ') + 3)) || ' ' || TRIM(SUBSTR(sp1, 1, INSTR(sp1, ' - ') - 1))
+                        ELSE sp1 END AS sp2
+            FROM (
+              -- ER labels are bilingual: "Lion / Simba", "Elephant / Ndovu (Tembo)".
+              -- Keep the English half so one animal gives one bar.
+              SELECT *,
+                     TRIM(CASE WHEN INSTR(sp_raw, ' / ') > 0 THEN SUBSTR(sp_raw, 1, INSTR(sp_raw, ' / ') - 1)
+                               ELSE sp_raw END) AS sp1
+              FROM (
+                -- Human Injury titles it "Species Responsible", Human Death
+                -- "Species responsible". JSON keys are case-sensitive, so read both.
+                SELECT *,
+                       CASE WHEN event_type IN ('human_injury', 'human_death')
+                              THEN COALESCE(json_extract(event_details, '$."Species responsible"'),
+                                            json_extract(event_details, '$."Species Responsible"'))
+                            WHEN event_type IN ('hwc_livestock_predation', 'crop_damage', 'infrastructure_damage',
+                                                'animal_carcass', 'sick_injured_animal')
+                              THEN json_extract(event_details, '$."Species"')
+                       END AS sp_raw
+                FROM df
+              )
+            )
+          )
+        )
+      columns: null
+      sanitize: true
+
+  - name: Parse Report Time
+    id: events_time
+    task: extract_column_as_type
+    skipif:
+      conditions: *deps
+    partial:
+      df: ${{ workflow.events_prepared.return }}
+      column_name: report_time
+      output_type: datetime
+      output_column_name: report_time
+      fan_out: true
+  - name: Convert Events to Timezone
+    id: events_tz
+    task: convert_values_to_timezone
+    skipif:
+      conditions: *deps
+    partial:
+      df: ${{ workflow.events_time.return }}
+      timezone: ${{ workflow.get_timezone.return }}
+      columns:
+      - report_time
+      auto_detect: false
+  - name: Add Event Month Index
+    id: events_indexed
+    task: add_temporal_index
+    skipif:
+      conditions: *deps
+    partial:
+      df: ${{ workflow.events_tz.return }}
+      time_col: report_time
+      groupers: ${{ workflow.groupers.return }}
+      cast_to_datetime: true
+      format: mixed
+  - name: Split Events by Month
+    id: events_grouped
+    task: split_groups
+    skipif:
+      conditions: *deps
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      groupers: ${{ workflow.groupers.return }}
+
+- title: Headline Totals
+  type: task-group
+  description: The eight numbers at the top of the report.
+  tasks:
+  # One row, eight named columns. dataframe_column_sum reads one each.
+  # COALESCE everywhere: a month with no records of a type must give 0, not
+  # NULL, or the KPI card renders blank instead of zero.
+  - name: Headline Figures
+    id: hwc_kpis
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT
+          COALESCE(SUM(is_conflict), 0) AS "Total incidents",
+          COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = 'human_injury' THEN 1 ELSE 0 END), 0) AS "People injured",
+          COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = 'human_death' THEN 1 ELSE 0 END), 0) AS "People killed",
+          CAST(COALESCE(SUM(CASE WHEN event_type = 'hwc_livestock_predation'
+                       THEN CAST(COALESCE(json_extract(event_details, '$."Total livestock dead"'), 0) AS REAL) ELSE 0 END), 0) AS INTEGER) AS "Livestock killed",
+          COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = 'animal_carcass' THEN 1 ELSE 0 END), 0) AS "Wildlife killed",
+          COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = 'sick_injured_animal' THEN 1 ELSE 0 END), 0) AS "Wildlife injured",
+          COALESCE(SUM(CASE WHEN event_type = 'poisoning' THEN 1 ELSE 0 END), 0) AS "Poisoning events",
+          COALESCE(SUM(ret_taken), 0) AS "Retaliation events"
+        FROM df
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+
+  - {name: Total Incidents Value, id: hwc_kpi_0_val, task: dataframe_column_sum,
+     partial: {column_name: Total incidents},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.hwc_kpis.return }}"}}
+  - {name: Total Incidents Widget, id: hwc_kpi_0_sv, task: create_single_value_widget_single_view,
+     skipif: {conditions: &never [never]},
+     partial: {title: Total Conflict Incidents, decimal_places: 0},
+     map: {argnames: [view, data], argvalues: "${{ workflow.hwc_kpi_0_val.return }}"}}
+  - {name: Merge Total Incidents Views, id: hwc_kpi_0_svw, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.hwc_kpi_0_sv.return }}"}}
+
+  - {name: People Injured Value, id: hwc_kpi_1_val, task: dataframe_column_sum,
+     partial: {column_name: People injured},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.hwc_kpis.return }}"}}
+  - {name: People Injured Widget, id: hwc_kpi_1_sv, task: create_single_value_widget_single_view,
+     skipif: {conditions: *never},
+     partial: {title: People Injured, decimal_places: 0},
+     map: {argnames: [view, data], argvalues: "${{ workflow.hwc_kpi_1_val.return }}"}}
+  - {name: Merge People Injured Views, id: hwc_kpi_1_svw, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.hwc_kpi_1_sv.return }}"}}
+
+  - {name: People Killed Value, id: hwc_kpi_2_val, task: dataframe_column_sum,
+     partial: {column_name: People killed},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.hwc_kpis.return }}"}}
+  - {name: People Killed Widget, id: hwc_kpi_2_sv, task: create_single_value_widget_single_view,
+     skipif: {conditions: *never},
+     partial: {title: People Killed, decimal_places: 0},
+     map: {argnames: [view, data], argvalues: "${{ workflow.hwc_kpi_2_val.return }}"}}
+  - {name: Merge People Killed Views, id: hwc_kpi_2_svw, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.hwc_kpi_2_sv.return }}"}}
+
+  - {name: Livestock Killed Value, id: hwc_kpi_3_val, task: dataframe_column_sum,
+     partial: {column_name: Livestock killed},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.hwc_kpis.return }}"}}
+  - {name: Livestock Killed Widget, id: hwc_kpi_3_sv, task: create_single_value_widget_single_view,
+     skipif: {conditions: *never},
+     partial: {title: Livestock Killed, decimal_places: 0},
+     map: {argnames: [view, data], argvalues: "${{ workflow.hwc_kpi_3_val.return }}"}}
+  - {name: Merge Livestock Killed Views, id: hwc_kpi_3_svw, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.hwc_kpi_3_sv.return }}"}}
+
+  - {name: Wildlife Killed Value, id: hwc_kpi_4_val, task: dataframe_column_sum,
+     partial: {column_name: Wildlife killed},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.hwc_kpis.return }}"}}
+  - {name: Wildlife Killed Widget, id: hwc_kpi_4_sv, task: create_single_value_widget_single_view,
+     skipif: {conditions: *never},
+     partial: {title: Wildlife Killed in Conflict, decimal_places: 0},
+     map: {argnames: [view, data], argvalues: "${{ workflow.hwc_kpi_4_val.return }}"}}
+  - {name: Merge Wildlife Killed Views, id: hwc_kpi_4_svw, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.hwc_kpi_4_sv.return }}"}}
+
+  - {name: Wildlife Injured Value, id: hwc_kpi_5_val, task: dataframe_column_sum,
+     partial: {column_name: Wildlife injured},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.hwc_kpis.return }}"}}
+  - {name: Wildlife Injured Widget, id: hwc_kpi_5_sv, task: create_single_value_widget_single_view,
+     skipif: {conditions: *never},
+     partial: {title: Wildlife Injured in Conflict, decimal_places: 0},
+     map: {argnames: [view, data], argvalues: "${{ workflow.hwc_kpi_5_val.return }}"}}
+  - {name: Merge Wildlife Injured Views, id: hwc_kpi_5_svw, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.hwc_kpi_5_sv.return }}"}}
+
+  # Naibunga has NO poisoning records as of 8 Nov 2026. This card exists so
+  # the slot holds and reads 0 rather than vanishing from the layout.
+  - {name: Poisoning Events Value, id: hwc_kpi_6_val, task: dataframe_column_sum,
+     partial: {column_name: Poisoning events},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.hwc_kpis.return }}"}}
+  - {name: Poisoning Events Widget, id: hwc_kpi_6_sv, task: create_single_value_widget_single_view,
+     skipif: {conditions: *never},
+     partial: {title: Poisoning Events, decimal_places: 0},
+     map: {argnames: [view, data], argvalues: "${{ workflow.hwc_kpi_6_val.return }}"}}
+  - {name: Merge Poisoning Events Views, id: hwc_kpi_6_svw, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.hwc_kpi_6_sv.return }}"}}
+
+  - {name: Retaliation Events Value, id: hwc_kpi_7_val, task: dataframe_column_sum,
+     partial: {column_name: Retaliation events},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.hwc_kpis.return }}"}}
+  - {name: Retaliation Events Widget, id: hwc_kpi_7_sv, task: create_single_value_widget_single_view,
+     skipif: {conditions: *never},
+     partial: {title: Retaliation Events, decimal_places: 0},
+     map: {argnames: [view, data], argvalues: "${{ workflow.hwc_kpi_7_val.return }}"}}
+  - {name: Merge Retaliation Events Views, id: hwc_kpi_7_svw, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.hwc_kpi_7_sv.return }}"}}
+
+  # Whole-period versions of the three summary tables. Same SQL as the
+  # monthly ones, run on events_indexed (ungrouped) so the report can state
+  # the period total -- the monthly tables never add up for the reader.
+  - name: Whole-Period Headline
+    id: period_kpis
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT
+          COALESCE(SUM(is_conflict), 0) AS "Total incidents",
+          COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = 'human_injury' THEN 1 ELSE 0 END), 0) AS "People injured",
+          COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = 'human_death' THEN 1 ELSE 0 END), 0) AS "People killed",
+          CAST(COALESCE(SUM(CASE WHEN event_type = 'hwc_livestock_predation'
+                       THEN CAST(COALESCE(json_extract(event_details, '$."Total livestock dead"'), 0) AS REAL) ELSE 0 END), 0) AS INTEGER) AS "Livestock killed",
+          COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = 'animal_carcass' THEN 1 ELSE 0 END), 0) AS "Wildlife killed",
+          COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = 'sick_injured_animal' THEN 1 ELSE 0 END), 0) AS "Wildlife injured",
+          COALESCE(SUM(CASE WHEN event_type = 'poisoning' THEN 1 ELSE 0 END), 0) AS "Poisoning events",
+          COALESCE(SUM(ret_taken), 0) AS "Retaliation events"
+        FROM df
+      columns: null
+      sanitize: true
+  - name: Whole-Period Conflict Types
+    id: period_ctype
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT conflict_type AS "Conflict type", COUNT(*) AS "Incidents"
+        FROM df WHERE is_conflict = 1
+        GROUP BY 1 ORDER BY 2 DESC
+      columns: null
+      sanitize: true
+  - name: Whole-Period Species
+    id: period_species
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT species_h AS "Species responsible",
+               SUM(CASE WHEN conflict_type = 'Livestock predation'    THEN 1 ELSE 0 END) AS "Livestock predation",
+               SUM(CASE WHEN conflict_type = 'Crop damage'            THEN 1 ELSE 0 END) AS "Crop damage",
+               SUM(CASE WHEN conflict_type = 'Infrastructure damage'  THEN 1 ELSE 0 END) AS "Infrastructure damage",
+               SUM(CASE WHEN conflict_type = 'Human injury'           THEN 1 ELSE 0 END) AS "Human injury",
+               SUM(CASE WHEN conflict_type = 'Human death'            THEN 1 ELSE 0 END) AS "Human death",
+               COUNT(*) AS "Total"
+        FROM df WHERE is_conflict = 1
+          AND event_type IN ('hwc_livestock_predation', 'crop_damage',
+                             'infrastructure_damage', 'human_injury', 'human_death')
+        GROUP BY 1 ORDER BY 7 DESC
+      columns: null
+      sanitize: true
+
+- title: Conflict Type
+  type: task-group
+  description: How the incidents break down by kind of conflict.
+  tasks:
+  - name: Conflict Type Counts
+    id: ctype_counts
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT conflict_type AS "Conflict type", COUNT(*) AS "Incidents"
+        FROM df WHERE is_conflict = 1
+        GROUP BY 1 ORDER BY 2 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - name: Draw Conflict Type Bar
+    id: ctype_bar
+    task: draw_bar_chart
+    partial:
+      category: Conflict type
+      bar_chart_configs:
+      - {label: Incidents, column: Incidents, agg_func: sum, show_label: true, style: {marker_color: '#b62879'}}
+      layout_kwargs: null
+    mapvalues:
+      argnames: dataframe
+      argvalues: ${{ workflow.ctype_counts.return }}
+  - {name: Persist Conflict Type Bar, id: ctype_bar_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: conflict_type_bar},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.ctype_bar.return }}"}}
+  - {name: Conflict Type Bar Widget, id: ctype_bar_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Incidents by Conflict Type},
+     map: {argnames: [view, data], argvalues: "${{ workflow.ctype_bar_html.return }}"}}
+  - {name: Merge Conflict Type Bar Views, id: ctype_bar_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.ctype_bar_w.return }}"}}
+
+  - {name: Draw Conflict Type Pie, id: ctype_pie, task: draw_pie_chart,
+     partial: {value_column: Incidents, label_column: Conflict type, color_column: null,
+               plot_style: {textinfo: value+percent}, layout_style: null},
+     mapvalues: {argnames: dataframe, argvalues: "${{ workflow.ctype_counts.return }}"}}
+  - {name: Persist Conflict Type Pie, id: ctype_pie_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: conflict_type_pie},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.ctype_pie.return }}"}}
+  - {name: Conflict Type Pie Widget, id: ctype_pie_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Share of Incidents by Conflict Type},
+     map: {argnames: [view, data], argvalues: "${{ workflow.ctype_pie_html.return }}"}}
+  - {name: Merge Conflict Type Pie Views, id: ctype_pie_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.ctype_pie_w.return }}"}}
+
+- title: Species Responsible
+  type: task-group
+  description: Which animals, and what kind of conflict each causes.
+  tasks:
+  # One column per conflict type gives draw_bar_chart its stacked series and
+  # doubles as the cross-tab the MRD asks for.
+  - name: Species by Conflict Type
+    id: species_x
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT species_h AS "Species responsible",
+               SUM(CASE WHEN conflict_type = 'Livestock predation'    THEN 1 ELSE 0 END) AS "Livestock predation",
+               SUM(CASE WHEN conflict_type = 'Crop damage'            THEN 1 ELSE 0 END) AS "Crop damage",
+               SUM(CASE WHEN conflict_type = 'Infrastructure damage'  THEN 1 ELSE 0 END) AS "Infrastructure damage",
+               SUM(CASE WHEN conflict_type = 'Human injury'           THEN 1 ELSE 0 END) AS "Human injury",
+               SUM(CASE WHEN conflict_type = 'Human death'            THEN 1 ELSE 0 END) AS "Human death",
+               COUNT(*) AS "Total"
+        FROM df WHERE is_conflict = 1
+          AND event_type IN ('hwc_livestock_predation', 'crop_damage',
+                             'infrastructure_damage', 'human_injury', 'human_death')
+        GROUP BY 1 ORDER BY 7 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - name: Draw Species Bar
+    id: species_bar
+    task: draw_bar_chart
+    partial:
+      category: Species responsible
+      bar_chart_configs:
+      - {label: Livestock predation,   column: Livestock predation,   agg_func: sum, show_label: true, style: {marker_color: '#3e35a3'}}
+      - {label: Crop damage,           column: Crop damage,           agg_func: sum, show_label: true, style: {marker_color: '#b62879'}}
+      - {label: Infrastructure damage, column: Infrastructure damage, agg_func: sum, show_label: true, style: {marker_color: '#ff803e'}}
+      - {label: Human injury,          column: Human injury,          agg_func: sum, show_label: true, style: {marker_color: '#ed3ea2'}}
+      - {label: Human death,           column: Human death,           agg_func: sum, show_label: true, style: {marker_color: '#3089ff'}}
+      layout_kwargs: null
+    mapvalues:
+      argnames: dataframe
+      argvalues: ${{ workflow.species_x.return }}
+  - {name: Persist Species Bar, id: species_bar_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: species_bar},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.species_bar.return }}"}}
+  # Quoted: an unquoted comma inside a flow mapping ends the value and starts
+  # a new KEY, so this title became a second partial called "by Conflict
+  # Type" and the compiler rejected it as a non-identifier. Every title with
+  # a comma, colon or bracket in it is quoted for the same reason.
+  - {name: Species Bar Widget, id: species_bar_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: "Species Responsible, by Conflict Type"},
+     map: {argnames: [view, data], argvalues: "${{ workflow.species_bar_html.return }}"}}
+  - {name: Merge Species Bar Views, id: species_bar_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.species_bar_w.return }}"}}
+
+  - {name: Draw Species Cross-tab, id: species_tbl, task: draw_table,
+     partial: {columns: null, table_config: {enable_sorting: true, enable_filtering: false,
+                                             enable_download: true, hide_header: false}},
+     mapvalues: {argnames: dataframe, argvalues: "${{ workflow.species_x.return }}"}}
+  - {name: Persist Species Cross-tab, id: species_tbl_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: species_crosstab},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.species_tbl.return }}"}}
+  - {name: Species Cross-tab Widget, id: species_tbl_w, task: create_table_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Species by Conflict Type},
+     map: {argnames: [view, data], argvalues: "${{ workflow.species_tbl_html.return }}"}}
+  - {name: Merge Species Cross-tab Views, id: species_tbl_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.species_tbl_w.return }}"}}
+
+- title: Hotspots
+  type: task-group
+  description: Where conflict happens, as points and as density.
+  tasks:
+  # Village/area is free TEXT on four of the five conflict events, so it
+  # cannot be grouped on. Hotspots are therefore geometry-based. Grouping by
+  # Patrol Block would need a Patrol Blocks spatial feature group in ER,
+  # which does not exist -- see the MRD, section 4.
+  - name: Conflict Points
+    id: hot_points
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT geometry, conflict_type AS "Conflict type", species_h AS "Species responsible",
+               substr(report_time, 1, 16) AS "Date", serial_number AS "Serial"
+        FROM df WHERE is_conflict = 1 AND geometry IS NOT NULL
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - name: Conflict Points Colormap
+    id: hot_cmap
+    task: apply_color_map
+    partial:
+      input_column_name: Conflict type
+      colormap: ['#3e35a3', '#b62879', '#ff803e', '#ed3ea2', '#3089ff', '#8c1700', '#a100cb', '#004e26']
+      output_column_name: hot_color
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.hot_points.return }}
+  - name: Conflict Points Layer
+    id: hot_layer
+    task: create_point_layer
+    skipif:
+      conditions: &geo
+      - any_is_empty_df
+      - any_dependency_skipped
+      - all_geometry_are_none
+    partial:
+      layer_style:
+        get_radius: 7.0
+        radius_units: pixels
+        fill_color_column: hot_color
+        get_line_color: '#ffffff'
+        stroked: true
+        get_line_width: 1
+        opacity: 0.85
+      legend:
+        label_column: Conflict type
+        color_column: hot_color
+      tooltip_columns: [Conflict type, Species responsible, Date, Serial]
+    mapvalues:
+      argnames: geodataframe
+      argvalues: ${{ workflow.hot_cmap.return }}
+  - name: Draw Conflict Points Map
+    id: hot_map
+    task: draw_ecomap
+    partial:
+      tile_layers: ${{ workflow.base_map_defs.return }}
+      static: false
+      title: null
+      north_arrow_style: {placement: top-left}
+      legend_style: {placement: bottom-right}
+      max_zoom: 20
+    mapvalues:
+      argnames: geo_layers
+      argvalues: ${{ workflow.hot_layer.return }}
+  - {name: Persist Conflict Points Map, id: hot_map_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: hotspot_points_map},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.hot_map.return }}"}}
+  - {name: Conflict Points Map Widget, id: hot_map_w, task: create_map_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Conflict Incidents},
+     map: {argnames: [view, data], argvalues: "${{ workflow.hot_map_html.return }}"}}
+  - {name: Merge Conflict Points Map Views, id: hot_map_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.hot_map_w.return }}"}}
+
+  # ---------------------------------------------------------------------
+  # DENSITY MAP -- the one block in this spec whose task names were NOT
+  # confirmed against the registry. create_meshgrid, calculate_feature_density
+  # and apply_classification come from the MRD, and no sibling repo uses them,
+  # so the first compile is the test. If it rejects any of the three: delete
+  # this block, drop `density_map_wm` from gather_dashboard, and remove its
+  # slot from layout.json. The point map above stands on its own.
+  # ---------------------------------------------------------------------
+  # One grid over every conflict point in the period, shared by all month
+  # views, so a cell is the same square in every month and the colours
+  # compare. Cell size comes from the density_grid form field (auto-scale or
+  # custom metres) -- this version of create_meshgrid has no cell_width.
+  - name: All Conflict Points
+    id: density_aoi
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT geometry FROM df WHERE is_conflict = 1 AND geometry IS NOT NULL
+      columns: null
+      sanitize: true
+  - name: Conflict Meshgrid
+    id: density_grid
+    task: create_meshgrid
+    skipif:
+      conditions: *geo
+    partial:
+      aoi: ${{ workflow.density_aoi.return }}
+      intersecting_only: false
+  - name: Conflict Density
+    id: density_calc
+    task: calculate_feature_density
+    skipif:
+      conditions: *geo
+    partial:
+      meshgrid: ${{ workflow.density_grid.return }}
+      geometry_type: point
+    mapvalues:
+      argnames: geodataframe
+      argvalues: ${{ workflow.hot_points.return }}
+  # Empty cells come back as NaN density; drop them so the classifier only
+  # sees cells with incidents and the map doesn't draw the whole grid.
+  - name: Occupied Density Cells
+    id: density_cells
+    task: apply_sql_query
+    skipif:
+      conditions: *geo
+    partial:
+      query: |
+        SELECT * FROM df WHERE density IS NOT NULL
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.density_calc.return }}
+  - name: Classify Conflict Density
+    id: density_class
+    task: apply_classification
+    skipif:
+      conditions: *geo
+    partial:
+      input_column_name: density
+      output_column_name: density_class
+      classification_options: {scheme: equal_interval, k: 5}
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.density_cells.return }}
+  - name: Conflict Density Colormap
+    id: density_cmap
+    task: apply_color_map
+    skipif:
+      conditions: *geo
+    partial:
+      input_column_name: density_class
+      colormap: YlOrRd
+      output_column_name: density_colour
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.density_class.return }}
+  - name: Conflict Density Layer
+    id: density_layer
+    task: create_polygon_layer
+    skipif:
+      conditions: *geo
+    partial:
+      layer_style:
+        fill_color_column: density_colour
+        opacity: 0.7
+        stroked: true
+        get_line_color: '#ffffff'
+        get_line_width: 0.5
+      legend:
+        label_column: density_class
+        color_column: density_colour
+        title: Incidents per cell
+      tooltip_columns: [density]
+    mapvalues:
+      argnames: geodataframe
+      argvalues: ${{ workflow.density_cmap.return }}
+  - name: Draw Conflict Density Map
+    id: density_map
+    task: draw_ecomap
+    partial:
+      tile_layers: ${{ workflow.base_map_defs.return }}
+      static: false
+      title: null
+      north_arrow_style: {placement: top-left}
+      legend_style: {placement: bottom-right}
+      max_zoom: 20
+    mapvalues:
+      argnames: geo_layers
+      argvalues: ${{ workflow.density_layer.return }}
+  - {name: Persist Conflict Density Map, id: density_map_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: hotspot_density_map},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.density_map.return }}"}}
+  - {name: Conflict Density Map Widget, id: density_map_w, task: create_map_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: "Conflict Density"},
+     map: {argnames: [view, data], argvalues: "${{ workflow.density_map_html.return }}"}}
+  - {name: Merge Conflict Density Map Views, id: density_map_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.density_map_w.return }}"}}
+
+- title: Seasonality
+  type: task-group
+  description: Incidents per month across the whole period, by conflict type.
+  tasks:
+  # Ungrouped on purpose: the month grouper gives one view per month, so a
+  # per-view trend would be a single bar. This reads events_indexed, spans
+  # the whole range, and feeds the dashboard unmerged -- same as the
+  # management report's Month-on-Month group.
+  - name: Conflict Trend Frame
+    id: trend_df
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT id, conflict_type, report_time FROM df WHERE is_conflict = 1
+      columns: null
+      sanitize: true
+  - name: Parse Trend Time
+    id: trend_time
+    task: extract_column_as_type
+    partial:
+      df: ${{ workflow.trend_df.return }}
+      column_name: report_time
+      output_type: datetime
+      output_column_name: report_time
+      fan_out: true
+  - name: Draw Conflict Trend
+    id: trend_chart
+    task: draw_time_series_bar_chart
+    partial:
+      dataframe: ${{ workflow.trend_time.return }}
+      x_axis: report_time
+      y_axis: id
+      category: conflict_type
+      agg_function: count
+      time_interval: month
+      color_column: null
+      plot_style: null
+      layout_style: null
+  - name: Persist Conflict Trend
+    id: trend_html
+    task: persist_text
+    partial:
+      text: ${{ workflow.trend_chart.return }}
+      root_path: ${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}
+      filename_suffix: conflict_trend
+  - name: Conflict Trend Widget
+    id: trend_w
+    task: create_plot_widget_single_view
+    skipif:
+      conditions: *never
+    partial:
+      title: Conflict Incidents per Month by Type
+      data: ${{ workflow.trend_html.return }}
+
+- title: Human Injury and Death
+  type: task-group
+  description: People hurt or killed in conflict, by species responsible.
+  tasks:
+  - name: Casualties by Species
+    id: cas_by_species
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT species_h AS "Species responsible",
+               SUM(CASE WHEN event_type = 'human_injury' THEN 1 ELSE 0 END) AS "Injured",
+               SUM(CASE WHEN event_type = 'human_death'  THEN 1 ELSE 0 END) AS "Killed"
+        FROM df
+        WHERE is_conflict = 1 AND event_type IN ('human_injury', 'human_death')
+        GROUP BY 1 ORDER BY 3 DESC, 2 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - name: Draw Casualties Bar
+    id: cas_bar
+    task: draw_bar_chart
+    partial:
+      category: Species responsible
+      bar_chart_configs:
+      - {label: Injured, column: Injured, agg_func: sum, show_label: true, style: {marker_color: '#ff803e'}}
+      - {label: Killed,  column: Killed,  agg_func: sum, show_label: true, style: {marker_color: '#8c1700'}}
+      layout_kwargs: null
+    mapvalues:
+      argnames: dataframe
+      argvalues: ${{ workflow.cas_by_species.return }}
+  - {name: Persist Casualties Bar, id: cas_bar_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: casualties_bar},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.cas_bar.return }}"}}
+  - {name: Casualties Bar Widget, id: cas_bar_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Human Casualties by Species Responsible},
+     map: {argnames: [view, data], argvalues: "${{ workflow.cas_bar_html.return }}"}}
+  - {name: Merge Casualties Bar Views, id: cas_bar_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.cas_bar_w.return }}"}}
+
+  # PII RULE, from the MRD's report-wide rules. This table is a column
+  # WHITELIST, not a blacklist: name, ID number, telephone, date of birth,
+  # ethnicity and tribe are never selected, so they cannot reach a widget or
+  # the Word report even if the form adds them later.
+  - name: Casualty Table
+    id: cas_table
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT substr(report_time, 1, 10) AS "Date",
+               CASE WHEN event_type = 'human_death' THEN 'Killed' ELSE 'Injured' END AS "Outcome",
+               species_h AS "Species responsible",
+               COALESCE(json_extract(event_details, '$."Age"'), '-') AS "Age",
+               COALESCE(json_extract(event_details, '$."Sex"'), '-') AS "Sex",
+               COALESCE(action_txt, '-') AS "Action taken",
+               serial_number AS "Serial"
+        FROM df
+        WHERE is_conflict = 1 AND event_type IN ('human_injury', 'human_death')
+        ORDER BY 1 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - {name: Draw Casualty Table, id: cas_tbl, task: draw_table,
+     partial: {columns: null, table_config: {enable_sorting: true, enable_filtering: false,
+                                             enable_download: true, hide_header: false}},
+     mapvalues: {argnames: dataframe, argvalues: "${{ workflow.cas_table.return }}"}}
+  - {name: Persist Casualty Table, id: cas_tbl_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: casualty_table},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.cas_tbl.return }}"}}
+  - {name: Casualty Table Widget, id: cas_tbl_w, task: create_table_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: "Human Casualties (no personal details)"},
+     map: {argnames: [view, data], argvalues: "${{ workflow.cas_tbl_html.return }}"}}
+  - {name: Merge Casualty Table Views, id: cas_tbl_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.cas_tbl_w.return }}"}}
+
+- title: Wildlife Injury and Death
+  type: task-group
+  description: Animals killed or hurt in conflict, by species and by cause.
+  tasks:
+  - name: Wildlife Casualties by Species
+    id: wl_by_species
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT COALESCE(animal_h, 'Unknown') AS "Species",
+               SUM(CASE WHEN event_type = 'animal_carcass'      THEN 1 ELSE 0 END) AS "Killed",
+               SUM(CASE WHEN event_type = 'sick_injured_animal' THEN 1 ELSE 0 END) AS "Injured"
+        FROM df
+        WHERE is_conflict = 1 AND event_type IN ('animal_carcass', 'sick_injured_animal')
+        GROUP BY 1 ORDER BY 2 DESC, 3 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - name: Draw Wildlife Casualties Bar
+    id: wl_bar
+    task: draw_bar_chart
+    partial:
+      category: Species
+      bar_chart_configs:
+      - {label: Killed,  column: Killed,  agg_func: sum, show_label: true, style: {marker_color: '#8c1700'}}
+      - {label: Injured, column: Injured, agg_func: sum, show_label: true, style: {marker_color: '#ff803e'}}
+      layout_kwargs: null
+    mapvalues:
+      argnames: dataframe
+      argvalues: ${{ workflow.wl_by_species.return }}
+  - {name: Persist Wildlife Casualties Bar, id: wl_bar_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: wildlife_casualties_bar},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.wl_bar.return }}"}}
+  - {name: Wildlife Casualties Bar Widget, id: wl_bar_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Wildlife Killed and Injured in Conflict},
+     map: {argnames: [view, data], argvalues: "${{ workflow.wl_bar_html.return }}"}}
+  - {name: Merge Wildlife Casualties Bar Views, id: wl_bar_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.wl_bar_w.return }}"}}
+
+  # Cause of Death and Cause of Injury are separate conditional fields that
+  # carry the same vocabulary (Arrow / Euthanised / Fence / Gunshot / Other /
+  # Poisoning / Snare / Spear), so they are COALESCEd into one column.
+  - name: Wildlife Casualty Causes
+    id: wl_by_cause
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT COALESCE(wl_cause, 'Not recorded') AS "Cause",
+               COUNT(*) AS "Animals"
+        FROM df
+        WHERE is_conflict = 1 AND event_type IN ('animal_carcass', 'sick_injured_animal')
+        GROUP BY 1 ORDER BY 2 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - name: Draw Wildlife Cause Bar
+    id: wl_cause_bar
+    task: draw_bar_chart
+    partial:
+      category: Cause
+      bar_chart_configs:
+      - {label: Animals, column: Animals, agg_func: sum, show_label: true, style: {marker_color: '#004e26'}}
+      layout_kwargs: null
+    mapvalues:
+      argnames: dataframe
+      argvalues: ${{ workflow.wl_by_cause.return }}
+  - {name: Persist Wildlife Cause Bar, id: wl_cause_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: wildlife_cause_bar},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.wl_cause_bar.return }}"}}
+  - {name: Wildlife Cause Bar Widget, id: wl_cause_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Cause of Wildlife Death or Injury},
+     map: {argnames: [view, data], argvalues: "${{ workflow.wl_cause_html.return }}"}}
+  - {name: Merge Wildlife Cause Bar Views, id: wl_cause_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.wl_cause_w.return }}"}}
+
+  - name: Wildlife Casualty Points
+    id: wl_points
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT geometry,
+               CASE WHEN event_type = 'animal_carcass' THEN 'Killed' ELSE 'Injured' END AS "Outcome",
+               COALESCE(animal_h, 'Unknown') AS "Species",
+               COALESCE(wl_cause, '-') AS "Cause",
+               substr(report_time, 1, 16) AS "Date"
+        FROM df
+        WHERE is_conflict = 1 AND event_type IN ('animal_carcass', 'sick_injured_animal')
+          AND geometry IS NOT NULL
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - {name: Wildlife Casualty Colormap, id: wl_cmap, task: apply_color_map,
+     partial: {input_column_name: Outcome, colormap: ['#8c1700', '#ff803e'], output_column_name: wl_color},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.wl_points.return }}"}}
+  - name: Wildlife Casualty Layer
+    id: wl_layer
+    task: create_point_layer
+    skipif:
+      conditions: *geo
+    partial:
+      layer_style:
+        get_radius: 7.0
+        radius_units: pixels
+        fill_color_column: wl_color
+        get_line_color: '#ffffff'
+        stroked: true
+        get_line_width: 1
+        opacity: 0.85
+      legend: {label_column: Outcome, color_column: wl_color}
+      tooltip_columns: [Outcome, Species, Cause, Date]
+    mapvalues:
+      argnames: geodataframe
+      argvalues: ${{ workflow.wl_cmap.return }}
+  - name: Draw Wildlife Casualty Map
+    id: wl_map
+    task: draw_ecomap
+    partial:
+      tile_layers: ${{ workflow.base_map_defs.return }}
+      static: false
+      title: null
+      north_arrow_style: {placement: top-left}
+      legend_style: {placement: bottom-right}
+      max_zoom: 20
+    mapvalues:
+      argnames: geo_layers
+      argvalues: ${{ workflow.wl_layer.return }}
+  - {name: Persist Wildlife Casualty Map, id: wl_map_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: wildlife_casualty_map},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.wl_map.return }}"}}
+  - {name: Wildlife Casualty Map Widget, id: wl_map_w, task: create_map_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Wildlife Killed or Injured in Conflict},
+     map: {argnames: [view, data], argvalues: "${{ workflow.wl_map_html.return }}"}}
+  - {name: Merge Wildlife Casualty Map Views, id: wl_map_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.wl_map_w.return }}"}}
+
+- title: Livestock Predation
+  type: task-group
+  description: What was taken, by what, and whether the boma held.
+  tasks:
+  # Every predation record is a conflict record, so no cause filter here.
+  - name: Livestock Losses by Species
+    id: pred_by_species
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
+                 CAST(json_extract(event_details, '$."Livestock species"') AS TEXT),
+                 '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Unspecified') AS "Livestock species",
+               CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$."Total livestock dead"'), 0) AS REAL)), 0) AS INTEGER) AS "Killed",
+               CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$."Total livestock injured"'), 0) AS REAL)), 0) AS INTEGER) AS "Injured"
+        FROM df WHERE event_type = 'hwc_livestock_predation'
+        GROUP BY 1 ORDER BY 2 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - name: Draw Livestock Losses Bar
+    id: pred_bar
+    task: draw_bar_chart
+    partial:
+      category: Livestock species
+      bar_chart_configs:
+      - {label: Killed,  column: Killed,  agg_func: sum, show_label: true, style: {marker_color: '#8c1700'}}
+      - {label: Injured, column: Injured, agg_func: sum, show_label: true, style: {marker_color: '#ff803e'}}
+      layout_kwargs: null
+    mapvalues:
+      argnames: dataframe
+      argvalues: ${{ workflow.pred_by_species.return }}
+  - {name: Persist Livestock Losses Bar, id: pred_bar_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: predation_losses_bar},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.pred_bar.return }}"}}
+  - {name: Livestock Losses Bar Widget, id: pred_bar_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Livestock Killed and Injured by Species},
+     map: {argnames: [view, data], argvalues: "${{ workflow.pred_bar_html.return }}"}}
+  - {name: Merge Livestock Losses Bar Views, id: pred_bar_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.pred_bar_w.return }}"}}
+
+  - name: Predators Responsible
+    id: pred_predators
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT species_h AS "Predator",
+               COUNT(*) AS "Attacks",
+               CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$."Total livestock dead"'), 0) AS REAL)), 0) AS INTEGER) AS "Livestock killed"
+        FROM df WHERE event_type = 'hwc_livestock_predation'
+        GROUP BY 1 ORDER BY 3 DESC, 2 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - name: Draw Predators Bar
+    id: pred_pred_bar
+    task: draw_bar_chart
+    partial:
+      category: Predator
+      bar_chart_configs:
+      - {label: Livestock killed, column: Livestock killed, agg_func: sum, show_label: true, style: {marker_color: '#3e35a3'}}
+      layout_kwargs: null
+    mapvalues:
+      argnames: dataframe
+      argvalues: ${{ workflow.pred_predators.return }}
+  - {name: Persist Predators Bar, id: pred_pred_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: predators_bar},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.pred_pred_bar.return }}"}}
+  - {name: Predators Bar Widget, id: pred_pred_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Livestock Killed by Predator Species},
+     map: {argnames: [view, data], argvalues: "${{ workflow.pred_pred_html.return }}"}}
+  - {name: Merge Predators Bar Views, id: pred_pred_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.pred_pred_w.return }}"}}
+
+  # Inside / outside boma / not recorded -- the question the boma fields exist
+  # to answer, and the one a manager acts on.
+  - name: Where Attacks Happened
+    id: pred_where
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT COALESCE(json_extract(event_details, '$."Animals found inside or outside boma"'),
+                        json_extract(event_details, '$."Animals found"'), 'Not recorded') AS "Attack location",
+               COUNT(*) AS "Attacks"
+        FROM df WHERE event_type = 'hwc_livestock_predation'
+        GROUP BY 1 ORDER BY 2 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - {name: Draw Attack Location Pie, id: pred_where_pie, task: draw_pie_chart,
+     partial: {value_column: Attacks, label_column: Attack location, color_column: null,
+               plot_style: {textinfo: value+percent}, layout_style: null},
+     mapvalues: {argnames: dataframe, argvalues: "${{ workflow.pred_where.return }}"}}
+  - {name: Persist Attack Location Pie, id: pred_where_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: attack_location_pie},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.pred_where_pie.return }}"}}
+  - {name: Attack Location Pie Widget, id: pred_where_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Where Attacks Happened},
+     map: {argnames: [view, data], argvalues: "${{ workflow.pred_where_html.return }}"}}
+  - {name: Merge Attack Location Pie Views, id: pred_where_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.pred_where_w.return }}"}}
+
+  # Proportional symbols: radius scales with livestock killed, so one bad
+  # night reads differently from one goat.
+  - name: Predation Points
+    id: pred_points
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT geometry,
+               species_h AS "Predator",
+               CAST(COALESCE(CAST(json_extract(event_details, '$."Total livestock dead"') AS REAL), 0) AS INTEGER) AS "Livestock killed",
+               COALESCE(json_extract(event_details, '$."Animals found inside or outside boma"'),
+                        json_extract(event_details, '$."Animals found"'), '-') AS "Attack location",
+               substr(report_time, 1, 16) AS "Date"
+        FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - {name: Predation Colormap, id: pred_cmap, task: apply_color_map,
+     partial: {input_column_name: Predator,
+               colormap: ['#3e35a3', '#b62879', '#ff803e', '#ed3ea2', '#3089ff', '#8c1700', '#a100cb', '#004e26', '#002960', '#f23b0e'],
+               output_column_name: pred_color},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.pred_points.return }}"}}
+
+  # ON THE get_radius SERIALIZER WARNING, which every mock run prints:
+  #
+  #     PydanticSerializationUnexpectedValue(Expected `float` …
+  #       field_name='get_radius', input_value=array([0, 2, 5, 4, 1, 4, 6, 3]))
+  #
+  # It is cosmetic. `get_radius` is declared `FloatAccessor = str | float |
+  # list[float]`; it receives the resolved column as an ndarray, which matches
+  # none of those, so pydantic grumbles while deck.gl consumes it fine -- the
+  # maps render.
+  #
+  # The leading 0 is an attack where livestock were injured but none killed.
+  # It does NOT vanish: `radius_min_pixels: 5` below clamps the drawn radius,
+  # so a zero-loss attack renders at the minimum dot size, which is the right
+  # picture -- smallest dot for smallest loss.
+  #
+  # `shift_radius_values` was tried here and removed. Its docstring claims it
+  # "shifts the given radius column so that values are >= 1", but the code
+  # only lifts when `series.min() < 0` or when the series has NaNs. With
+  # min == 0 and no NaNs it returns the column untouched, so it was a no-op
+  # node that implied a fix it was not making. Worth reporting upstream: the
+  # docstring and the behaviour disagree.
+  - name: Predation Layer
+    id: pred_layer
+    task: create_point_layer
+    skipif:
+      conditions: *geo
+    partial:
+      layer_style:
+        get_radius: Livestock killed
+        radius_scale: 3.0
+        radius_min_pixels: 5
+        radius_max_pixels: 40
+        fill_color_column: pred_color
+        get_line_color: '#ffffff'
+        stroked: true
+        get_line_width: 1
+        opacity: 0.8
+      legend: {label_column: Predator, color_column: pred_color}
+      tooltip_columns: [Predator, Livestock killed, Attack location, Date]
+    mapvalues:
+      argnames: geodataframe
+      argvalues: ${{ workflow.pred_cmap.return }}
+  - name: Draw Predation Map
+    id: pred_map
+    task: draw_ecomap
+    partial:
+      tile_layers: ${{ workflow.base_map_defs.return }}
+      static: false
+      title: null
+      north_arrow_style: {placement: top-left}
+      legend_style: {placement: bottom-right}
+      max_zoom: 20
+    mapvalues:
+      argnames: geo_layers
+      argvalues: ${{ workflow.pred_layer.return }}
+  - {name: Persist Predation Map, id: pred_map_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: predation_map},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.pred_map.return }}"}}
+  - {name: Predation Map Widget, id: pred_map_w, task: create_map_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: "Predation Events (sized by livestock killed)"},
+     map: {argnames: [view, data], argvalues: "${{ workflow.pred_map_html.return }}"}}
+  - {name: Merge Predation Map Views, id: pred_map_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.pred_map_w.return }}"}}
+
+- title: Crop and Infrastructure Damage
+  type: task-group
+  description: What was damaged and how much of it, where the cause was wildlife.
+  tasks:
+  - name: Crop Damage by Type
+    id: crop_by_type
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
+                 CAST(json_extract(event_details, '$."Type of crop"') AS TEXT),
+                 '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS "Crop",
+               COALESCE(json_extract(event_details, '$."Extent of damage"'), 'Not recorded') AS "Extent",
+               COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
+                 CAST(json_extract(event_details, '$."Cause of Damage - Wildlife"') AS TEXT),
+                 '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS "Damage type",
+               COUNT(*) AS "Incidents",
+               CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$."Number of animals responsible"'), 0) AS REAL)), 0) AS INTEGER) AS "Animals involved"
+        FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage'
+        GROUP BY 1, 2, 3 ORDER BY 4 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - {name: Draw Crop Damage Table, id: crop_tbl, task: draw_table,
+     partial: {columns: null, table_config: {enable_sorting: true, enable_filtering: false,
+                                             enable_download: true, hide_header: false}},
+     mapvalues: {argnames: dataframe, argvalues: "${{ workflow.crop_by_type.return }}"}}
+  - {name: Persist Crop Damage Table, id: crop_tbl_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: crop_damage_table},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.crop_tbl.return }}"}}
+  - {name: Crop Damage Table Widget, id: crop_tbl_w, task: create_table_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Crop Damage by Crop and Extent},
+     map: {argnames: [view, data], argvalues: "${{ workflow.crop_tbl_html.return }}"}}
+  - {name: Merge Crop Damage Table Views, id: crop_tbl_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.crop_tbl_w.return }}"}}
+
+  # ONE ROW PER COMBINATION, not per property -- a known limitation.
+  #
+  # Type of Property is a multi-select and 4 of the 6 live records name more
+  # than one thing, so "Water Pipes, Water Tank" appears as its own category
+  # and a reader cannot total water tanks alone.
+  #
+  # json_each would fix it and apply_sql_query's own source lists it as
+  # readable ("the JSON table-valued functions, which download workflows use
+  # to explode sanitized list columns into rows"). It does not work: opening
+  # the virtual table trips SQLITE_UPDATE on sqlite_master, which the
+  # deny-by-default authorizer rejects, giving
+  #     SQL query failed: vtable constructor failed: json_each
+  # Reproduced against the authorizer verbatim. A recursive CTE is the other
+  # way to split an array, and validate_sql_query refuses anything that does
+  # not START with SELECT, so WITH RECURSIVE is out too.
+  #
+  # Until that is fixed upstream the combination is the honest unit, and the
+  # report says so in section 9 rather than letting a reader assume
+  # otherwise. `Animals involved` is summed per combination and is accurate.
+  #
+  # Type of Property is a multi-select on the live form, so a record can name
+  # several. Counting rows, not items: a record that damaged a fence and a
+  # water tank counts once against each value it carries is NOT what this
+  # does -- json_extract returns the whole array as text and it groups as one
+  # combination. Revisit if the site starts recording multiple properties
+  # routinely; today only 3 records carry any property at all.
+  - name: Infrastructure Damage by Property
+    id: infra_by_type
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
+                 CAST(json_extract(event_details, '$."Type of Property"') AS TEXT),
+                 '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS "Property",
+               COALESCE(json_extract(event_details, '$."Extent of damage"'), 'Not recorded') AS "Extent",
+               COUNT(*) AS "Incidents",
+               CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$."Number of animals responsible"'), 0) AS REAL)), 0) AS INTEGER) AS "Animals involved"
+        FROM df WHERE is_conflict = 1 AND event_type = 'infrastructure_damage'
+        GROUP BY 1, 2 ORDER BY 3 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - name: Draw Infrastructure Damage Bar
+    id: infra_bar
+    task: draw_bar_chart
+    partial:
+      category: Property
+      bar_chart_configs:
+      - {label: Incidents, column: Incidents, agg_func: sum, show_label: true, style: {marker_color: '#ff803e'}}
+      layout_kwargs: null
+    mapvalues:
+      argnames: dataframe
+      argvalues: ${{ workflow.infra_by_type.return }}
+  - {name: Persist Infrastructure Damage Bar, id: infra_bar_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: infrastructure_bar},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.infra_bar.return }}"}}
+  - {name: Infrastructure Damage Bar Widget, id: infra_bar_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Infrastructure Damage by Property Type},
+     map: {argnames: [view, data], argvalues: "${{ workflow.infra_bar_html.return }}"}}
+  - {name: Merge Infrastructure Damage Bar Views, id: infra_bar_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.infra_bar_w.return }}"}}
+
+  - name: Damage Points
+    id: dmg_points
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT geometry, conflict_type AS "Damage type",
+               species_h AS "Species responsible",
+               COALESCE(json_extract(event_details, '$."Extent of damage"'), '-') AS "Extent",
+               substr(report_time, 1, 16) AS "Date"
+        FROM df
+        WHERE is_conflict = 1 AND event_type IN ('crop_damage', 'infrastructure_damage')
+          AND geometry IS NOT NULL
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - {name: Damage Colormap, id: dmg_cmap, task: apply_color_map,
+     partial: {input_column_name: Damage type, colormap: ['#b62879', '#ff803e'], output_column_name: dmg_color},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.dmg_points.return }}"}}
+  - name: Damage Layer
+    id: dmg_layer
+    task: create_point_layer
+    skipif:
+      conditions: *geo
+    partial:
+      layer_style:
+        get_radius: 7.0
+        radius_units: pixels
+        fill_color_column: dmg_color
+        get_line_color: '#ffffff'
+        stroked: true
+        get_line_width: 1
+        opacity: 0.85
+      legend: {label_column: Damage type, color_column: dmg_color}
+      tooltip_columns: [Damage type, Species responsible, Extent, Date]
+    mapvalues:
+      argnames: geodataframe
+      argvalues: ${{ workflow.dmg_cmap.return }}
+  - name: Draw Damage Map
+    id: dmg_map
+    task: draw_ecomap
+    partial:
+      tile_layers: ${{ workflow.base_map_defs.return }}
+      static: false
+      title: null
+      north_arrow_style: {placement: top-left}
+      legend_style: {placement: bottom-right}
+      max_zoom: 20
+    mapvalues:
+      argnames: geo_layers
+      argvalues: ${{ workflow.dmg_layer.return }}
+  - {name: Persist Damage Map, id: dmg_map_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: damage_map},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.dmg_map.return }}"}}
+  - {name: Damage Map Widget, id: dmg_map_w, task: create_map_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Crop and Infrastructure Damage},
+     map: {argnames: [view, data], argvalues: "${{ workflow.dmg_map_html.return }}"}}
+  - {name: Merge Damage Map Views, id: dmg_map_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.dmg_map_w.return }}"}}
+
+- title: Response and Action Taken
+  type: task-group
+  description: What was done about each incident, and how often anything was.
+  tasks:
+  # The MRD's hardest section. The Action multi-select has a DIFFERENT option
+  # list on every event type -- Human Injury 6, Human Death 7, Predation 8,
+  # Crop 7, Infrastructure 7, Poisoning 5 -- and they share only four ideas.
+  # So the shared category is mapped here rather than read off one field.
+  #
+  # LIKE, not =, because the field is a multi-select: json_extract returns a
+  # JSON array as text, and a record can carry several actions at once. Each
+  # record therefore counts towards every category it matches, which is the
+  # behaviour you want for "what was done" and NOT what you want for a
+  # share-of-total. `Any action recorded` is the denominator for that.
+  - name: Response Categories
+    id: resp_counts
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT conflict_type AS "Conflict type",
+               SUM(CASE WHEN a LIKE '%deter%' OR a LIKE '%driven%' OR a LIKE '%chased%' THEN 1 ELSE 0 END) AS "Animal deterred",
+               SUM(CASE WHEN a LIKE '%kws%' OR a LIKE '%authorit%' OR a LIKE '%report%' THEN 1 ELSE 0 END) AS "Reported to authorities",
+               SUM(CASE WHEN a LIKE '%treat%' OR a LIKE '%hospital%' OR a LIKE '%transport%' OR a LIKE '%carcass%'
+                          OR a LIKE '%body%' THEN 1 ELSE 0 END) AS "Casualty handled",
+               SUM(CASE WHEN a LIKE '%assess%' OR a LIKE '%document%' OR a LIKE '%repair%' OR a LIKE '%mitigation%' THEN 1 ELSE 0 END) AS "Damage assessed / repaired",
+               SUM(CASE WHEN a LIKE '%compensat%' OR a LIKE '%claim%' THEN 1 ELSE 0 END) AS "Compensation claim",
+               -- The RESIDUAL, and it is not optional. Every one of the six
+               -- Action lists ends in `Other (specify in notes)`, and that is
+               -- what the live predation records carry. Without this column a
+               -- row reads `0 0 0 0 0` across the five categories with
+               -- `Any action recorded = 1` beside it -- a flat contradiction to
+               -- anyone reading the table. Defined as the complement of the
+               -- five above, so it cannot drift out of step with them: a value
+               -- that stops matching a category lands here instead of
+               -- vanishing.
+               SUM(CASE WHEN a <> ''
+                         AND a NOT LIKE '%deter%' AND a NOT LIKE '%driven%' AND a NOT LIKE '%chased%'
+                         AND a NOT LIKE '%kws%' AND a NOT LIKE '%authorit%' AND a NOT LIKE '%report%'
+                         AND a NOT LIKE '%treat%' AND a NOT LIKE '%hospital%' AND a NOT LIKE '%transport%'
+                         AND a NOT LIKE '%carcass%' AND a NOT LIKE '%body%'
+                         AND a NOT LIKE '%assess%' AND a NOT LIKE '%document%' AND a NOT LIKE '%repair%'
+                         AND a NOT LIKE '%mitigation%'
+                         AND a NOT LIKE '%compensat%' AND a NOT LIKE '%claim%'
+                        THEN 1 ELSE 0 END) AS "Other / unspecified",
+               SUM(CASE WHEN a = '' THEN 0 ELSE 1 END) AS "Any action recorded",
+               COUNT(*) AS "Incidents"
+        FROM (
+          SELECT conflict_type, LOWER(COALESCE(action_txt, '')) AS a
+          FROM df WHERE is_conflict = 1
+        )
+        GROUP BY 1 ORDER BY 9 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - name: Draw Response Bar
+    id: resp_bar
+    task: draw_bar_chart
+    partial:
+      category: Conflict type
+      bar_chart_configs:
+      - {label: Animal deterred,        column: Animal deterred,        agg_func: sum, show_label: true, style: {marker_color: '#3e35a3'}}
+      - {label: Reported to authorities, column: Reported to authorities, agg_func: sum, show_label: true, style: {marker_color: '#3089ff'}}
+      - {label: Casualty handled,       column: Casualty handled,       agg_func: sum, show_label: true, style: {marker_color: '#004e26'}}
+      - {label: Damage assessed / repaired, column: Damage assessed / repaired, agg_func: sum, show_label: true, style: {marker_color: '#ff803e'}}
+      - {label: Compensation claim,     column: Compensation claim,     agg_func: sum, show_label: true, style: {marker_color: '#a100cb'}}
+      - {label: "Other / unspecified",  column: "Other / unspecified",  agg_func: sum, show_label: true, style: {marker_color: '#8a8a8a'}}
+      layout_kwargs: null
+    mapvalues:
+      argnames: dataframe
+      argvalues: ${{ workflow.resp_counts.return }}
+  - {name: Persist Response Bar, id: resp_bar_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: response_bar},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.resp_bar.return }}"}}
+  - {name: Response Bar Widget, id: resp_bar_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Action Taken by Conflict Type},
+     map: {argnames: [view, data], argvalues: "${{ workflow.resp_bar_html.return }}"}}
+  - {name: Merge Response Bar Views, id: resp_bar_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.resp_bar_w.return }}"}}
+
+  - {name: Draw Response Table, id: resp_tbl, task: draw_table,
+     partial: {columns: null, table_config: {enable_sorting: true, enable_filtering: false,
+                                             enable_download: true, hide_header: false}},
+     mapvalues: {argnames: dataframe, argvalues: "${{ workflow.resp_counts.return }}"}}
+  - {name: Persist Response Table, id: resp_tbl_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: response_table},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.resp_tbl.return }}"}}
+  - {name: Response Table Widget, id: resp_tbl_w, task: create_table_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Response Summary},
+     map: {argnames: [view, data], argvalues: "${{ workflow.resp_tbl_html.return }}"}}
+  - {name: Merge Response Table Views, id: resp_tbl_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.resp_tbl_w.return }}"}}
+
+- title: Retaliation
+  type: task-group
+  description: Threatened against carried out, and the evidence behind it.
+  tasks:
+  # These are fields inside the conditional conflict section of Human Injury,
+  # Human Death and HWC Livestock Predation -- not a separate event type.
+  # Booleans arrive as 1/true/True/Yes depending on how the record was
+  # written, so all four are matched.
+  - name: Retaliation Figures
+    id: ret_kpis
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT
+          COALESCE(SUM(ret_taken), 0)      AS "Retaliation taken",
+          COALESCE(SUM(ret_threatened), 0) AS "Retaliation threatened"
+        FROM df WHERE is_conflict = 1
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - {name: Retaliation Taken Value, id: ret_kpi_0_val, task: dataframe_column_sum,
+     partial: {column_name: Retaliation taken},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.ret_kpis.return }}"}}
+  - {name: Retaliation Taken Widget, id: ret_kpi_0_sv, task: create_single_value_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Retaliation Carried Out, decimal_places: 0},
+     map: {argnames: [view, data], argvalues: "${{ workflow.ret_kpi_0_val.return }}"}}
+  - {name: Merge Retaliation Taken Views, id: ret_kpi_0_svw, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.ret_kpi_0_sv.return }}"}}
+
+  - {name: Retaliation Threatened Value, id: ret_kpi_1_val, task: dataframe_column_sum,
+     partial: {column_name: Retaliation threatened},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.ret_kpis.return }}"}}
+  - {name: Retaliation Threatened Widget, id: ret_kpi_1_sv, task: create_single_value_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Retaliation Threatened, decimal_places: 0},
+     map: {argnames: [view, data], argvalues: "${{ workflow.ret_kpi_1_val.return }}"}}
+  - {name: Merge Retaliation Threatened Views, id: ret_kpi_1_svw, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.ret_kpi_1_sv.return }}"}}
+
+  - name: Retaliation by Species
+    id: ret_by_species
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT species_h AS "Species responsible",
+               SUM(ret_taken)      AS "Carried out",
+               SUM(ret_threatened) AS "Threatened"
+        FROM df WHERE is_conflict = 1
+        GROUP BY 1 HAVING "Carried out" > 0 OR "Threatened" > 0
+        ORDER BY 2 DESC, 3 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - name: Draw Retaliation Bar
+    id: ret_bar
+    task: draw_bar_chart
+    partial:
+      category: Species responsible
+      bar_chart_configs:
+      - {label: Carried out, column: Carried out, agg_func: sum, show_label: true, style: {marker_color: '#8c1700'}}
+      - {label: Threatened,  column: Threatened,  agg_func: sum, show_label: true, style: {marker_color: '#f23b0e'}}
+      layout_kwargs: null
+    mapvalues:
+      argnames: dataframe
+      argvalues: ${{ workflow.ret_by_species.return }}
+  - {name: Persist Retaliation Bar, id: ret_bar_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: retaliation_bar},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.ret_bar.return }}"}}
+  - {name: Retaliation Bar Widget, id: ret_bar_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Retaliation by Species Responsible},
+     map: {argnames: [view, data], argvalues: "${{ workflow.ret_bar_html.return }}"}}
+  - {name: Merge Retaliation Bar Views, id: ret_bar_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.ret_bar_w.return }}"}}
+
+  - name: Retaliation Evidence
+    id: ret_evidence
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT COALESCE(ret_evidence, 'Not recorded') AS "Evidence",
+               COUNT(*) AS "Incidents"
+        FROM df
+        WHERE is_conflict = 1 AND ret_taken = 1
+        GROUP BY 1 ORDER BY 2 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - {name: Draw Evidence Pie, id: ret_ev_pie, task: draw_pie_chart,
+     partial: {value_column: Incidents, label_column: Evidence, color_column: null,
+               plot_style: {textinfo: value+percent}, layout_style: null},
+     mapvalues: {argnames: dataframe, argvalues: "${{ workflow.ret_evidence.return }}"}}
+  - {name: Persist Evidence Pie, id: ret_ev_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: retaliation_evidence_pie},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.ret_ev_pie.return }}"}}
+  - {name: Evidence Pie Widget, id: ret_ev_w, task: create_plot_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Evidence Behind Recorded Retaliation},
+     map: {argnames: [view, data], argvalues: "${{ workflow.ret_ev_html.return }}"}}
+  - {name: Merge Evidence Pie Views, id: ret_ev_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.ret_ev_w.return }}"}}
+
+# The Word report. Tables are merged across groups so the document reads as
+# one report over the whole period with a Group column, rather than one
+# document per month. Images are the persisted HTML charts and maps, which
+# create_docx screenshots to PNG via Playwright -- maps get a longer
+# wait_for_timeout because tiles have to load first.
+
+- title: Tree Crop Damage
+  type: task-group
+  description: Damage to tree crops, counted in trees rather than acres.
+  tasks:
+  # The MRD asks for "incidents per tree type, stacked by number of trees".
+  # The live crop_damage form carries both fields -- "Type of tree crop" and
+  # "Extent of damage (no trees)" -- and NO record has ever filled either
+  # (checked against the instance, 9 Nov 2026: 0 of 7). So this renders
+  # "No records for this period." until somebody starts using them. That is
+  # the honest state: the question is in the report, and its emptiness is
+  # visible, rather than the question being quietly dropped.
+  - name: Tree Crop Damage
+    id: tree_by_type
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
+                 CAST(json_extract(event_details, '$."Type of tree crop"') AS TEXT),
+                 '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS "Tree crop",
+               COUNT(*) AS "Incidents",
+               CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$."Extent of damage (no trees)"'), 0) AS REAL)), 0) AS INTEGER) AS "Trees damaged"
+        FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage'
+          AND json_extract(event_details, '$."Type of tree crop"') IS NOT NULL
+        GROUP BY 1 ORDER BY 3 DESC, 2 DESC
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - {name: Draw Tree Crop Table, id: tree_tbl, task: draw_table,
+     partial: {columns: null, table_config: {enable_sorting: true, enable_filtering: false,
+                                             enable_download: true, hide_header: false}},
+     mapvalues: {argnames: dataframe, argvalues: "${{ workflow.tree_by_type.return }}"}}
+  - {name: Persist Tree Crop Table, id: tree_tbl_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: tree_crop_table},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.tree_tbl.return }}"}}
+  - {name: Tree Crop Table Widget, id: tree_tbl_w, task: create_table_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: Tree Crop Damage},
+     map: {argnames: [view, data], argvalues: "${{ workflow.tree_tbl_html.return }}"}}
+  - {name: Merge Tree Crop Table Views, id: tree_tbl_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.tree_tbl_w.return }}"}}
+
+- title: Incident Timeline
+  type: task-group
+  description: Conflict incidents in time order, with the gap since the one before.
+  tasks:
+  # The last MRD section with no implementation: "a plot to show the timeline
+  # of how events unfolded and the time between them".
+  #
+  # Done as an ordered record rather than a chart, because at Naibunga's
+  # volume -- 24 incidents in eleven months -- the useful question is "what
+  # happened, in what order, how far apart", and a scatter of 24 points
+  # answers that worse than a list does. LAG() gives the gap; window
+  # functions are on apply_sql_query's allow-list (lag, lead, row_number,
+  # rank, first_value, ...), so this needs no new task.
+  #
+  # Ungrouped on purpose: a per-month view would reset the clock at every
+  # month boundary and hide exactly the gaps worth seeing.
+  - name: Incident Timeline
+    id: timeline_df
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT substr(report_time, 1, 16) AS "Date",
+               conflict_type AS "Conflict type",
+               species_h AS "Species responsible",
+               serial_number AS "Serial",
+               CAST(ROUND(COALESCE(
+                 julianday(report_time) - julianday(LAG(report_time) OVER (ORDER BY report_time)), 0
+               )) AS INTEGER) AS "Days since previous"
+        FROM df WHERE is_conflict = 1
+        ORDER BY report_time
+      columns: null
+      sanitize: true
+  - name: Draw Timeline Table
+    id: timeline_tbl
+    task: draw_table
+    partial:
+      dataframe: ${{ workflow.timeline_df.return }}
+      columns: null
+      table_config: {enable_sorting: true, enable_filtering: true, enable_download: true, hide_header: false}
+  - {name: Persist Timeline Table, id: timeline_html, task: persist_text,
+     partial: {text: "${{ workflow.timeline_tbl.return }}",
+               root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: incident_timeline}}
+  - {name: Timeline Table Widget, id: timeline_w, task: create_table_widget_single_view,
+     skipif: {conditions: *never},
+     partial: {title: "Incident Timeline (whole period)", data: "${{ workflow.timeline_html.return }}"}}
+
+- title: Data Completeness
+  type: task-group
+  description: How much of each conflict form was actually filled in.
+  tasks:
+  # Not in the MRD, added from what the first live run exposed. Of the 12
+  # predation records in Jan-Nov 2026: 2 carry no livestock counts, 3 name no
+  # livestock species, and 10 record no boma location -- which is why "Where
+  # attacks happened" reads mostly "Not recorded". The boma fields are the
+  # ones a manager acts on, so their absence is a finding, not a footnote.
+  #
+  # A reader who cannot tell "no attacks inside bomas" from "nobody wrote it
+  # down" will draw the wrong conclusion from this report. This table is what
+  # stops that.
+  - name: Completeness Checks
+    id: completeness
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT 'Predation: no livestock count' AS "Check",
+               SUM(CASE WHEN event_type = 'hwc_livestock_predation'
+                        AND json_extract(event_details, '$."Total livestock dead"') IS NULL
+                        AND json_extract(event_details, '$."Total livestock injured"') IS NULL
+                   THEN 1 ELSE 0 END) AS "Records",
+               SUM(CASE WHEN event_type = 'hwc_livestock_predation' THEN 1 ELSE 0 END) AS "Of"
+        FROM df
+        UNION ALL
+        SELECT 'Predation: no livestock species',
+               SUM(CASE WHEN event_type = 'hwc_livestock_predation'
+                        AND json_extract(event_details, '$."Livestock species"') IS NULL THEN 1 ELSE 0 END),
+               SUM(CASE WHEN event_type = 'hwc_livestock_predation' THEN 1 ELSE 0 END)
+        FROM df
+        UNION ALL
+        SELECT 'Predation: no boma location',
+               SUM(CASE WHEN event_type = 'hwc_livestock_predation'
+                        AND json_extract(event_details, '$."Animals found inside or outside boma"') IS NULL
+                        AND json_extract(event_details, '$."Animals found"') IS NULL THEN 1 ELSE 0 END),
+               SUM(CASE WHEN event_type = 'hwc_livestock_predation' THEN 1 ELSE 0 END)
+        FROM df
+        UNION ALL
+        SELECT 'Conflict incidents: no species responsible',
+               SUM(CASE WHEN is_conflict = 1 AND species_h = 'Unknown' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN is_conflict = 1 THEN 1 ELSE 0 END)
+        FROM df
+        UNION ALL
+        SELECT 'Conflict incidents: no location',
+               SUM(CASE WHEN is_conflict = 1 AND geometry IS NULL THEN 1 ELSE 0 END),
+               SUM(CASE WHEN is_conflict = 1 THEN 1 ELSE 0 END)
+        FROM df
+        UNION ALL
+        SELECT 'Conflict incidents: no action recorded',
+               SUM(CASE WHEN is_conflict = 1 AND COALESCE(
+                     CAST(json_extract(event_details, '$."Action"') AS TEXT),
+                     CAST(json_extract(event_details, '$."Action taken"') AS TEXT),
+                     CAST(json_extract(event_details, '$."Action Taken"') AS TEXT), '') IN ('', 'null', '[]')
+                   THEN 1 ELSE 0 END),
+               SUM(CASE WHEN is_conflict = 1 THEN 1 ELSE 0 END)
+        FROM df
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+  - {name: Draw Completeness Table, id: comp_tbl, task: draw_table,
+     partial: {columns: null, table_config: {enable_sorting: false, enable_filtering: false,
+                                             enable_download: true, hide_header: false}},
+     mapvalues: {argnames: dataframe, argvalues: "${{ workflow.completeness.return }}"}}
+  - {name: Persist Completeness Table, id: comp_tbl_html, task: persist_text,
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: completeness_table},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.comp_tbl.return }}"}}
+  - {name: Completeness Table Widget, id: comp_tbl_w, task: create_table_widget_single_view,
+     skipif: {conditions: *never}, partial: {title: "Data Completeness"},
+     map: {argnames: [view, data], argvalues: "${{ workflow.comp_tbl_html.return }}"}}
+  - {name: Merge Completeness Table Views, id: comp_tbl_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.comp_tbl_w.return }}"}}
+
+- name: Word Report
+  id: create_report
+  task: ecoscope_workflows_ext_custom.tasks.results.create_docx
+  skipif:
+    conditions: *never
+  partial:
+    template_path: https://drive.google.com/uc?export=download&id=1lfvoVqrk7LGdTF8mDZc2KPsQryyfpdk5   # pinned: not shown in the run form
+    context:
+      items:
+      - {item_type: timerange, key: report_date, value: "${{ workflow.time_range.return }}", format: '%B %Y'}
+      - {item_type: text, key: prepared_by, value: "${{ workflow.prepared_by.return }}"}
+      - {item_type: table, key: hwc_kpis,        value: "${{ workflow.hwc_kpis.return }}",        merge_groups: true}
+      - {item_type: table, key: period_kpis, value: "${{ workflow.period_kpis.return }}"}
+      - {item_type: table, key: ctype_counts,    value: "${{ workflow.ctype_counts.return }}",    merge_groups: true}
+      - {item_type: table, key: period_ctype, value: "${{ workflow.period_ctype.return }}"}
+      - {item_type: table, key: species_x,       value: "${{ workflow.species_x.return }}",       merge_groups: true}
+      - {item_type: table, key: period_species, value: "${{ workflow.period_species.return }}"}
+      - {item_type: table, key: cas_by_species,  value: "${{ workflow.cas_by_species.return }}",  merge_groups: true}
+      - {item_type: table, key: cas_table,       value: "${{ workflow.cas_table.return }}",       merge_groups: true}
+      - {item_type: table, key: wl_by_species,   value: "${{ workflow.wl_by_species.return }}",   merge_groups: true}
+      - {item_type: table, key: wl_by_cause,     value: "${{ workflow.wl_by_cause.return }}",     merge_groups: true}
+      - {item_type: table, key: pred_by_species, value: "${{ workflow.pred_by_species.return }}", merge_groups: true}
+      - {item_type: table, key: pred_predators,  value: "${{ workflow.pred_predators.return }}",  merge_groups: true}
+      - {item_type: table, key: pred_where,      value: "${{ workflow.pred_where.return }}",      merge_groups: true}
+      - {item_type: table, key: crop_by_type,    value: "${{ workflow.crop_by_type.return }}",    merge_groups: true}
+      - {item_type: table, key: infra_by_type,   value: "${{ workflow.infra_by_type.return }}",   merge_groups: true}
+      - {item_type: table, key: resp_counts,     value: "${{ workflow.resp_counts.return }}",     merge_groups: true}
+      - {item_type: table, key: ret_kpis,        value: "${{ workflow.ret_kpis.return }}",        merge_groups: true}
+      - {item_type: table, key: ret_by_species,  value: "${{ workflow.ret_by_species.return }}",  merge_groups: true}
+      - {item_type: table, key: ret_evidence,    value: "${{ workflow.ret_evidence.return }}",    merge_groups: true}
+      - {item_type: table, key: tree_by_type,    value: "${{ workflow.tree_by_type.return }}",    merge_groups: true}
+      - {item_type: table, key: completeness,    value: "${{ workflow.completeness.return }}",    merge_groups: true}
+      # Ungrouped: one table for the whole period, not one per month.
+      - {item_type: table, key: timeline,        value: "${{ workflow.timeline_df.return }}"}
+      - {item_type: image, key: ctype_pies, value: "${{ workflow.ctype_pie_html.return }}", width_inches: 6.0,
+         screenshot_config: {wait_for_timeout: 0, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
+      - {item_type: image, key: species_bars, value: "${{ workflow.species_bar_html.return }}", width_inches: 6.0,
+         screenshot_config: {wait_for_timeout: 0, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
+      - {item_type: image, key: hotspot_maps, value: "${{ workflow.hot_map_html.return }}", width_inches: 6.0,
+         screenshot_config: {wait_for_timeout: 10000, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
+      - {item_type: image, key: predation_maps, value: "${{ workflow.pred_map_html.return }}", width_inches: 6.0,
+         screenshot_config: {wait_for_timeout: 10000, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
+      - {item_type: image, key: conflict_trend, value: "${{ workflow.trend_html.return }}", width_inches: 6.0,
+         screenshot_config: {wait_for_timeout: 0, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
+      # The maps and pies the MRD names as report outputs, which were on the
+      # dashboard but missing from the document. Maps get the longer
+      # wait_for_timeout because the base-map tiles have to load before the
+      # screenshot; charts render immediately.
+      - {item_type: image, key: density_maps, value: "${{ workflow.density_map_html.return }}", width_inches: 6.0,
+         screenshot_config: {wait_for_timeout: 10000, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
+      - {item_type: image, key: wildlife_maps, value: "${{ workflow.wl_map_html.return }}", width_inches: 6.0,
+         screenshot_config: {wait_for_timeout: 10000, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
+      - {item_type: image, key: damage_maps, value: "${{ workflow.dmg_map_html.return }}", width_inches: 6.0,
+         screenshot_config: {wait_for_timeout: 10000, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
+      - {item_type: image, key: boma_pies, value: "${{ workflow.pred_where_html.return }}", width_inches: 6.0,
+         screenshot_config: {wait_for_timeout: 0, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
+      - {item_type: image, key: evidence_pies, value: "${{ workflow.ret_ev_html.return }}", width_inches: 6.0,
+         screenshot_config: {wait_for_timeout: 0, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
+    groupers: ${{ workflow.groupers.return }}
+    output_dir: ${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}
+    filename_prefix: naibunga_lower_hwc_report
+    skip: false
+    missing_text: No records for this period.
+
+- title: Downloadable Results
+  type: task-group
+  description: The CSV and the Word report, listed in the app's Files tab.
+  tasks:
+  # WHY THE FILES TAB WAS EMPTY
+  #
+  # Nothing in this workflow registered a downloadable result. persist_text
+  # writes the widget HTML and create_docx writes the report, but the Files
+  # tab is not a directory listing -- it is populated from the `files`
+  # argument of gather_dashboard, and that was unset. So the outputs existed
+  # on disk and the app correctly said "No downloadable results were
+  # generated". Opening the results folder worked because the folder is the
+  # filesystem; the Files tab is the manifest.
+  #
+  # The chain, per the fleet's download pattern:
+  #   persist_grouped_dfs_for_results_download  (writes, returns paths)
+  #     -> create_files_single_view             (paths -> a view)
+  #       -> merge_file_views                   (views -> GroupedFiles)
+  #         -> gather_dashboard(files=...)
+  #
+  # persist_grouped_dfs_for_results_download rather than persist_df_wrapper:
+  # it embeds a 6-char hash of the group key in each filename, which is how
+  # the front end matches a file to a dashboard view. Its return is a FLAT
+  # list of paths across all groups, so it feeds one ungrouped view and the
+  # app does the matching from the filenames.
+  - name: Incident Export
+    id: events_export
+    task: apply_sql_query
+    partial:
+      query: |
+        SELECT serial_number AS "Serial",
+               substr(report_time, 1, 16) AS "Date",
+               conflict_type AS "Conflict type",
+               event_type AS "Event type",
+               species_h AS "Species responsible",
+               COALESCE(json_extract(event_details, '$."Livestock species"'), '') AS "Livestock species",
+               CAST(COALESCE(CAST(json_extract(event_details, '$."Total livestock dead"') AS REAL), 0) AS INTEGER) AS "Livestock killed",
+               CAST(COALESCE(CAST(json_extract(event_details, '$."Total livestock injured"') AS REAL), 0) AS INTEGER) AS "Livestock injured",
+               COALESCE(json_extract(event_details, '$."Animals found inside or outside boma"'),
+                        json_extract(event_details, '$."Animals found"'), '') AS "Attack location",
+               COALESCE(json_extract(event_details, '$."Type of crop"'), '') AS "Crop",
+               COALESCE(json_extract(event_details, '$."Type of Property"'), '') AS "Property",
+               COALESCE(json_extract(event_details, '$."Extent of damage"'), '') AS "Extent of damage",
+               COALESCE(json_extract(event_details, '$."Age"'), '') AS "Age",
+               COALESCE(json_extract(event_details, '$."Sex"'), '') AS "Sex",
+               COALESCE(CAST(json_extract(event_details, '$."Action"') AS TEXT),
+                        CAST(json_extract(event_details, '$."Action taken"') AS TEXT),
+                        CAST(json_extract(event_details, '$."Action Taken"') AS TEXT), '') AS "Action taken",
+               geometry AS "Location"
+        FROM df WHERE is_conflict = 1
+        ORDER BY report_time
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
+
+  # Same column whitelist discipline as the casualty table: no name, ID
+  # number, telephone, date of birth, ethnicity or tribe is selected above,
+  # so none can reach a file a user downloads and forwards.
+  - name: Write Incident CSV
+    id: export_files
+    task: persist_grouped_dfs_for_results_download
+    skipif:
+      conditions: *never
+    partial:
+      grouped_dfs: ${{ workflow.events_export.return }}
+      root_path: ${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}
+      filetypes: [csv]
+      filename_prefix: hwc_incidents
+      sanitize: true
+  - name: Incident CSV Files
+    id: files_export_view
+    task: create_files_single_view
+    skipif:
+      conditions: *never
+    partial:
+      files: ${{ workflow.export_files.return }}
+  - name: Word Report File
+    id: files_report_view
+    task: create_files_single_view
+    skipif:
+      conditions: *never
+    partial:
+      files: ${{ workflow.create_report.return }}
+  - name: Merge File Views
+    id: files_merged
+    task: merge_file_views
+    skipif:
+      conditions: *never
+    partial:
+      files:
+      - ${{ workflow.files_export_view.return }}
+      - ${{ workflow.files_report_view.return }}
+- name: Create Dashboard
+  id: dashboard
+  task: gather_dashboard
+  partial:
+    details: ${{ workflow.workflow_details.return }}
+    widgets:
+    # Headline -- layout slots 0-7
+    - ${{ workflow.hwc_kpi_0_svw.return }}
+    - ${{ workflow.hwc_kpi_1_svw.return }}
+    - ${{ workflow.hwc_kpi_2_svw.return }}
+    - ${{ workflow.hwc_kpi_3_svw.return }}
+    - ${{ workflow.hwc_kpi_4_svw.return }}
+    - ${{ workflow.hwc_kpi_5_svw.return }}
+    - ${{ workflow.hwc_kpi_6_svw.return }}
+    - ${{ workflow.hwc_kpi_7_svw.return }}
+    # Conflict type -- 8, 9
+    - ${{ workflow.ctype_bar_wm.return }}
+    - ${{ workflow.ctype_pie_wm.return }}
+    # Species responsible -- 10, 11
+    - ${{ workflow.species_bar_wm.return }}
+    - ${{ workflow.species_tbl_wm.return }}
+    # Hotspots -- 12, 13. Slot 13 is the unconfirmed density map: if the
+    # registry rejects create_meshgrid / calculate_feature_density /
+    # apply_classification, delete this line and slot 13 from layout.json.
+    - ${{ workflow.hot_map_wm.return }}
+    - ${{ workflow.density_map_wm.return }}
+    # Seasonality -- 14 (ungrouped, feeds unmerged)
+    - ${{ workflow.trend_w.return }}
+    # Human injury and death -- 15, 16
+    - ${{ workflow.cas_bar_wm.return }}
+    - ${{ workflow.cas_tbl_wm.return }}
+    # Wildlife injury and death -- 17, 18, 19
+    - ${{ workflow.wl_bar_wm.return }}
+    - ${{ workflow.wl_cause_wm.return }}
+    - ${{ workflow.wl_map_wm.return }}
+    # Livestock predation -- 20, 21, 22, 23
+    - ${{ workflow.pred_bar_wm.return }}
+    - ${{ workflow.pred_pred_wm.return }}
+    - ${{ workflow.pred_where_wm.return }}
+    - ${{ workflow.pred_map_wm.return }}
+    # Crop and infrastructure -- 24, 25, 26, 27
+    - ${{ workflow.crop_tbl_wm.return }}
+    - ${{ workflow.infra_bar_wm.return }}
+    - ${{ workflow.tree_tbl_wm.return }}
+    - ${{ workflow.dmg_map_wm.return }}
+    # Response -- 28, 29
+    - ${{ workflow.resp_bar_wm.return }}
+    - ${{ workflow.resp_tbl_wm.return }}
+    # Retaliation -- 30, 31, 32, 33
+    - ${{ workflow.ret_kpi_0_svw.return }}
+    - ${{ workflow.ret_kpi_1_svw.return }}
+    - ${{ workflow.ret_bar_wm.return }}
+    - ${{ workflow.ret_ev_wm.return }}
+    # Timeline and completeness -- 34, 35. Both ungrouped, so they feed in
+    # unmerged, the same way the seasonality chart does.
+    - ${{ workflow.timeline_w.return }}
+    - ${{ workflow.comp_tbl_wm.return }}
+    groupers: ${{ workflow.groupers.return }}
+    time_range: ${{ workflow.time_range.return }}
+    # What makes the Files tab non-empty. Without this the outputs exist on
+    # disk and the app says "No downloadable results were generated", because
+    # the tab is a manifest, not a directory listing.
+    files: ${{ workflow.files_merged.return }}

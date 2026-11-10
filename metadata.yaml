@@ -1,21 +1,33 @@
-name:  # Title Case, e.g. "My Ecoscope Workflow Template"
+name: Naibunga Lower Human-Wildlife Conflict Report
 
 # at least one author is required
 author:
-  - name: ""
-    organization: ""
-    email: ""
+  - name: "Rodney Omukuti"
+    organization: "Wildlife Dynamics"
+    email: "rodney@wildlifedynamics.com"
 
-description: # A short description
+description: >-
+  Dashboard and Word report on human-wildlife conflict at Naibunga Lower:
+  what type of conflict occurred, which species were responsible, where and
+  when incidents cluster, what was lost, how it was responded to, and how
+  often retaliation against wildlife was threatened or carried out.
 
-# todo: add example
-theory: "" # optional
+theory: >-
+  Conflict is not one event type. It is a label derived from the event plus
+  its cause field: Human Injury and Human Death where the cause is
+  human-wildlife conflict, Crop and Infrastructure damage where the cause of
+  damage is wildlife, Animal Carcass where the type of death is conflict,
+  Sick / Injured Animal where the type of injury is conflict, Poisoning where
+  the suspected motive is retaliation, and every HWC Livestock Predation
+  record, which has no cause field because the event type is the cause. The
+  workflow applies that label once and every section reads it, so the same
+  record is counted the same way in the headline total, the species chart and
+  the hotspot map.
 
-# todo: add example
-output_comment: "" # optional
+output_comment: >-
+  One dashboard view per group, plus a Word report. Species names are
+  harmonised across event types before counting: the five conflict events use
+  three different spellings for the same animal, so an unharmonised species
+  chart splits one elephant into three bars.
 
-# optional
-# example
-# citation: 
-#   - Wu, Y. et al. (2025). "Monitoring elephant spatial patterns with Ecoscope workflows."
-citation: [] 
+citation: []
