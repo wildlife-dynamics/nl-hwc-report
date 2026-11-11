@@ -16,6 +16,25 @@
 # No live case yet: it needs the Naibunga connection name and a confirmation
 # that the event-type slugs and the display titles in events_prepared match
 # the instance.
+#
+# SECTION 4 ADDS A SECOND IO TASK, AND EVERY CASE MUST OVERRIDE IT.
+#
+# `get_incident_events` (ecoscope-workflows-ext-wd, the storyboard chain) is
+# io-tagged, and the package ships NO packaged example return for it. Under
+# --mock-io, wt_task.testing looks for an override env var first and then for a
+# packaged `get-incident-events.example-return.*`, so without the override
+# below every case dies before the DAG starts with
+#     FileNotFoundError: Expected exactly 1 example-return file matching
+#     'get-incident-events.example-return.*' in ecoscope_workflows_ext_wd.tasks
+# The anchor is `ecoscope_workflows_ext_wd.tasks`, NOT `...tasks.io`, and the
+# env var name is derived from it, so the dotted key has to match exactly.
+#
+# `base` gets the populated fixture -- the same Loshaiki raid as the events
+# fixture, one incident of three events -- so the storyboard actually renders
+# in at least one case. The other two get the empty fixture, which is the
+# task's own documented empty return and is Naibunga's real state today: no
+# event on the instance is in a collection, so section 4 is a placeholder in
+# production until that changes.
 
 base:
   name: Base case (two months, synthetic fixtures)
@@ -30,6 +49,7 @@ base:
   mock_io_overrides:
     ecoscope.platform.tasks.io.get_events: mock-io/events.example-return.parquet
     ecoscope.platform.tasks.io.process_events_details: mock-io/events.example-return.parquet
+    ecoscope_workflows_ext_wd.tasks.get_incident_events: mock-io/incident-events.example-return.parquet
   params:
     workflow_details:
       name: "Naibunga Lower HWC Report"
@@ -65,6 +85,7 @@ no_poisoning:
   mock_io_overrides:
     ecoscope.platform.tasks.io.get_events: mock-io/events-no-poisoning.example-return.parquet
     ecoscope.platform.tasks.io.process_events_details: mock-io/events-no-poisoning.example-return.parquet
+    ecoscope_workflows_ext_wd.tasks.get_incident_events: mock-io/incident-events-empty.example-return.parquet
   params:
     workflow_details:
       name: "Naibunga Lower HWC Report"
@@ -97,6 +118,7 @@ empty:
   mock_io_overrides:
     ecoscope.platform.tasks.io.get_events: mock-io/events-empty.example-return.parquet
     ecoscope.platform.tasks.io.process_events_details: mock-io/events-empty.example-return.parquet
+    ecoscope_workflows_ext_wd.tasks.get_incident_events: mock-io/incident-events-empty.example-return.parquet
   params:
     workflow_details:
       name: "Naibunga Lower HWC Report"

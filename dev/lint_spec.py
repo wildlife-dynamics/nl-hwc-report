@@ -138,6 +138,62 @@ def main() -> int:
                 f"empty period -- add `skipif: {{conditions: *never}}`"
             )
 
+        # 5c2. the three things validate_sql_query rejects outright.
+        #
+        # All cheap to check here and all slow to find otherwise: the length
+        # one surfaced only after the fixtures had been rebuilt and the whole
+        # query chain run. Comments count toward the 10,000, so a long
+        # explanatory block inside the SQL is what pushes it over -- put those
+        # in a YAML comment above the task instead.
+        if t_task == "apply_sql_query":
+            q = (t.get("partial") or {}).get("query")
+            if isinstance(q, str):
+                if not q.lstrip().upper().startswith("SELECT"):
+                    problems.append(
+                        f"{path} ({tid}): query does not start with SELECT "
+                        f"(a leading `--` comment block does this) -- "
+                        f"'Only SELECT queries are allowed'"
+                    )
+                if ";" in q:
+                    line = next(
+                        (i for i, ln in enumerate(q.split("\n"), 1) if ";" in ln), 0
+                    )
+                    problems.append(
+                        f"{path} ({tid}): query contains ';' on line {line} -- "
+                        f"rejected anywhere in the text, INCLUDING inside a "
+                        f"`--` comment"
+                    )
+                if len(q) > 10_000:
+                    problems.append(
+                        f"{path} ({tid}): query is {len(q)} characters, over the "
+                        f"10,000 limit. Comments count -- move the long ones "
+                        f"into a YAML comment above the task."
+                    )
+                elif len(q) > 9_500:
+                    problems.append(
+                        f"{path} ({tid}): query is {len(q)} characters, within "
+                        f"{10_000 - len(q)} of the 10,000 limit"
+                    )
+
+        # 5d. `barmode` inside a layout style does NOTHING.
+        #
+        # draw_bar_chart's layout_kwargs and draw_pie_chart's layout_style are
+        # LayoutStyle (or BarLayoutStyle) pydantic models with a closed field
+        # list, and pydantic drops unknown keys SILENTLY. Four charts in this
+        # spec carried `layout_kwargs: {barmode: stack}` and every one of them
+        # rendered grouped; nothing errored, and the review caught it by eye.
+        # Stacking is an argument of draw_chart (`barmode: stack`), not a
+        # layout key -- a chart that needs to stack has to use that task.
+        for style_key in ("layout_kwargs", "layout_style"):
+            style = (t.get("partial") or {}).get(style_key)
+            if isinstance(style, dict) and "barmode" in style:
+                problems.append(
+                    f"{path} ({tid}): `barmode` in {style_key} is dropped "
+                    f"silently by pydantic and the chart renders grouped. Use "
+                    f"the `draw_chart` task, which takes barmode as a real "
+                    f"argument, with the data in long format."
+                )
+
     # 5c. don't feed a GROUPED task's return into a plain `partial`.
     #
     # A task with `map` or `mapvalues` runs once per group and returns a list
