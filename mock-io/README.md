@@ -18,8 +18,8 @@ repository.** The live sample these were modelled on stays in gitignored
 | `events.example-return.parquet` | `base` | `ecoscope.platform.tasks.io.get_events`, `…io.process_events_details` |
 | `events-no-poisoning.example-return.parquet` | `no_poisoning` | both of the above |
 | `events-empty.example-return.parquet` | `empty` | both of the above |
-| `incident-events.example-return.parquet` | `base` | `ecoscope_workflows_ext_wd.tasks.get_incident_events` |
-| `incident-events-empty.example-return.parquet` | `no_poisoning`, `empty` | the same |
+| `incident-events.example-return.parquet` | *(none — see below)* | `ecoscope_workflows_ext_wd.tasks.get_incident_events` |
+| `incident-events-empty.example-return.parquet` | `base`, `no_poisoning`, `empty` | the same |
 
 One events file serves both event tasks in each case: they are both io-tagged
 and both return the same event frame, so the case overrides both to the same
@@ -47,6 +47,14 @@ The populated one is the **same Loshaiki raid** as the events fixture, seen as
 container excluded. The two fixtures therefore tell one story — the incident
 rule collapses those three events to one in Table 1, and the storyboard draws
 the same three in order.
+
+**The populated fixture is currently wired to no case, on purpose.** Giving
+`format_incident_storyboards` a non-empty frame fails on Windows with
+`ValueError('Invalid format string')`, because ext-wd formats its tile dates
+with `%-d` — a glibc extension the Windows C runtime rejects. The task returns
+early on an empty frame, so the empty fixture never reaches it. Upstream bug,
+written up in `.scratch/UPSTREAM-ext-wd-windows.md`; the file is kept here so
+that wiring it back is a one-line change the day it is fixed.
 
 ## Regenerating
 

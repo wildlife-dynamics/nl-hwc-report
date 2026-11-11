@@ -2271,6 +2271,18 @@ workflow:
   # get_incident_events produces, and guessing at its columns would be a slower
   # way to get it wrong.
   #
+  # IT DOES NOT WORK ON WINDOWS ONCE IT HAS DATA. format_incident_storyboards
+  # formats its tile dates with '%-d', a glibc strftime extension for an
+  # unpadded day that the Windows C runtime rejects, so with a non-empty frame
+  # the task raises
+  #     ValueError('Invalid format string')
+  # and takes the WHOLE RUN with it -- no dashboard, no Word report. The task
+  # returns early on an empty frame, so the failure only appears at a site that
+  # actually links events into incidents. Reported upstream against ext-wd
+  # 0.0.14; see .scratch/UPSTREAM-ext-wd-windows.md. If that matters before a
+  # fix lands, delete this task-group and the ext-wd requirement -- they are a
+  # separate commit for exactly this reason.
+  #
   # THIS SECTION IS EMPTY UNTIL EVENTS ARE LINKED INTO INCIDENT COLLECTIONS.
   # get_incident_events reads collections, and on 10 Nov 2026 all 4,115
   # Naibunga events had an empty is_contained_in -- the same fact that makes
