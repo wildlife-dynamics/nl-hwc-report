@@ -37,13 +37,10 @@ from ecoscope.platform.tasks.results import (
     create_table_widget_single_view as create_table_widget_single_view,
 )
 from ecoscope.platform.tasks.results import draw_bar_chart as draw_bar_chart
+from ecoscope.platform.tasks.results import draw_chart as draw_chart
 from ecoscope.platform.tasks.results import draw_ecomap as draw_ecomap
-from ecoscope.platform.tasks.results import draw_line_chart as draw_line_chart
 from ecoscope.platform.tasks.results import draw_pie_chart as draw_pie_chart
 from ecoscope.platform.tasks.results import draw_table as draw_table
-from ecoscope.platform.tasks.results import (
-    draw_time_series_bar_chart as draw_time_series_bar_chart,
-)
 from ecoscope.platform.tasks.results import gather_dashboard as gather_dashboard
 from ecoscope.platform.tasks.results import merge_file_views as merge_file_views
 from ecoscope.platform.tasks.results import merge_widget_views as merge_widget_views
@@ -69,6 +66,13 @@ from ecoscope.platform.tasks.transformation import (
     extract_column_as_type as extract_column_as_type,
 )
 from ecoscope_workflows_ext_custom.tasks.results import create_docx as create_docx
+from ecoscope_workflows_ext_wd.tasks import (
+    assign_event_type_colors as assign_event_type_colors,
+)
+from ecoscope_workflows_ext_wd.tasks import (
+    format_incident_storyboards as format_incident_storyboards,
+)
+from ecoscope_workflows_ext_wd.tasks import get_incident_events as get_incident_events
 from wt_contracts import validate as _validate
 from wt_task import task
 
@@ -278,6 +282,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "time",
                 "is_collection",
                 "is_contained_in",
+                "notes",
             ],
             **(params.get("events_safe") or {}),
         )
@@ -298,7 +303,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         )
         .partial(
             df=events_safe,
-            query="SELECT *,\n       MIN(report_time) OVER (PARTITION BY incident_id) AS incident_time,\n       FIRST_VALUE(geometry) OVER (\n         PARTITION BY incident_id ORDER BY report_time, id\n       ) AS incident_geometry,\n       ROW_NUMBER() OVER (\n         PARTITION BY CASE WHEN is_conflict = 1 THEN incident_id END\n         ORDER BY report_time, id\n       ) AS conflict_seq\nFROM (\nSELECT id, serial_number, event_type, event_type_display, event_category,\n       event_details, geometry,\n\n       -- The collection this event sits in, else the event itself.\n       -- `is_contained_in` is a list of parent collections, and sanitize\n       -- turns it into a JSON string before the query runs, so\n       -- json_extract reads it directly. NULL (column absent, empty\n       -- list, or no collections configured on the instance) falls back\n       -- to the event id, making every event its own incident.\n       COALESCE(json_extract(is_contained_in, '$[0].id'), id) AS incident_id,\n\n       strftime('%Y-%m-%dT%H:%M:%SZ', COALESCE(\n         CASE\n           WHEN event_type IN ('human_injury', 'crop_damage',\n                'infrastructure_damage') THEN json_extract(event_details, '$.\"Incident date & time\"')\n           WHEN event_type = 'poisoning' THEN COALESCE(\n                json_extract(event_details, '$.\"Date & Time\"'),\n                json_extract(event_details, '$.\"Date & time\"'))\n         END,\n         time)) AS report_time,\n\n       CASE\n         WHEN event_type = 'hwc_livestock_predation' THEN 1\n         WHEN event_type = 'human_injury'\n              AND json_extract(event_details, '$.\"Cause of injury\"') = 'Human-wildlife conflict' THEN 1\n         WHEN event_type = 'human_death'\n              AND json_extract(event_details, '$.\"Cause\"') = 'Human-wildlife conflict' THEN 1\n         WHEN event_type IN ('crop_damage', 'infrastructure_damage')\n              AND json_extract(event_details, '$.\"Cause of damage\"') = 'Wildlife' THEN 1\n         WHEN event_type = 'animal_carcass'\n              AND json_extract(event_details, '$.\"Type of Death\"') LIKE 'Conflict%' THEN 1\n         -- the live choice label is \"Conflict - fill in relevant HWC form\"\n         WHEN event_type = 'sick_injured_animal'\n              AND json_extract(event_details, '$.\"Type of Injury\"') LIKE 'Conflict%' THEN 1\n         WHEN event_type = 'poisoning'\n              AND json_extract(event_details, '$.\"Suspected motive\"') = 'HWC retaliation' THEN 1\n         ELSE 0\n       END AS is_conflict,\n\n       CASE event_type\n         WHEN 'hwc_livestock_predation' THEN 'Livestock predation'\n         WHEN 'human_injury'            THEN 'Human injury'\n         WHEN 'human_death'             THEN 'Human death'\n         WHEN 'crop_damage'             THEN 'Crop damage'\n         WHEN 'infrastructure_damage'   THEN 'Infrastructure damage'\n         WHEN 'animal_carcass'          THEN 'Wildlife death'\n         WHEN 'sick_injured_animal'     THEN 'Wildlife injury'\n         WHEN 'poisoning'               THEN 'Poisoning'\n         ELSE event_type_display\n       END AS conflict_type,\n\n       -- species_h is the animal RESPONSIBLE. animal_h is the animal that\n       -- died or was hurt (Carcass, Sick / Injured), kept apart so a dead\n       -- zebra never reads as a species responsible.\n       CASE WHEN event_type IN ('animal_carcass', 'sick_injured_animal') THEN 'Unknown' ELSE sp_h END AS species_h,\n       CASE WHEN event_type IN ('animal_carcass', 'sick_injured_animal') THEN sp_h END AS animal_h,\n\n       -- Carcass and Sick / Injured split the cause into one field per type\n       -- of death or injury. The un-suffixed names are the legacy forms.\n       COALESCE(json_extract(event_details, '$.\"Cause of Death (CONFLICT)\"'),\n                json_extract(event_details, '$.\"Cause of Injury (CONFLICT)\"'),\n                json_extract(event_details, '$.\"Cause of Death (POACHED)\"'),\n                json_extract(event_details, '$.\"Cause of Injury (POACHED)\"'),\n                json_extract(event_details, '$.\"Cause of Death (PAC)\"'),\n                json_extract(event_details, '$.\"Cause of Injury (PAC)\"'),\n                json_extract(event_details, '$.\"Cause of Death (NATURAL)\"'),\n                json_extract(event_details, '$.\"Cause of Injury (NATURAL)\"'),\n                json_extract(event_details, '$.\"Cause of Injury (UNKNOWN)\"'),\n                json_extract(event_details, '$.\"Cause of Death\"'),\n                json_extract(event_details, '$.\"Cause of Injury\"')) AS wl_cause,\n\n       -- Crop Damage drops the question mark from both retaliation titles.\n       CASE WHEN COALESCE(json_extract(event_details, '$.\"Retaliation action taken?\"'),\n                          json_extract(event_details, '$.\"Retaliation action taken\"'))\n                 IN (1, 'true', 'True', 'Yes') THEN 1 ELSE 0 END AS ret_taken,\n       CASE WHEN COALESCE(json_extract(event_details, '$.\"Retaliation action threatened?\"'),\n                          json_extract(event_details, '$.\"Retaliation action threatened\"'))\n                 IN (1, 'true', 'True', 'Yes') THEN 1 ELSE 0 END AS ret_threatened,\n\n       -- Multi-selects arrive as JSON arrays. Flatten to \"a, b\" for display.\n       NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CAST(COALESCE(\n         json_extract(event_details, '$.\"Evidence of retaliation?\"'),\n         json_extract(event_details, '$.\"Evidence of retaliation\"')) AS TEXT),\n         '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), '') AS ret_evidence,\n       NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CAST(COALESCE(\n         json_extract(event_details, '$.\"Action\"'),\n         json_extract(event_details, '$.\"Action taken\"'),\n         json_extract(event_details, '$.\"Action Taken\"')) AS TEXT),\n         '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), '') AS action_txt\n\nFROM (\n  SELECT *,\n         CASE\n           WHEN sp2 IS NULL OR sp2 = '' THEN 'Unknown'\n           WHEN LOWER(sp2) IN ('baboon, olive', 'baboon olive', 'olive baboon') THEN 'Olive Baboon'\n           WHEN LOWER(sp2) IN ('hyena, spotted', 'hyena spotted', 'spotted hyena') THEN 'Spotted Hyena'\n           WHEN LOWER(sp2) IN ('hyena, striped', 'hyena striped', 'striped hyena') THEN 'Striped Hyena'\n           WHEN LOWER(sp2) IN ('zebra, burchells', 'burchells zebra') THEN 'Burchells Zebra'\n           WHEN LOWER(sp2) IN ('zebra, grevys', 'grevys zebra') THEN 'Grevys Zebra'\n           WHEN LOWER(sp2) IN ('gazelle, grants', 'grants gazelle') THEN 'Grants Gazelle'\n           WHEN LOWER(sp2) IN ('gazelle, thompsons', 'thompsons gazelle') THEN 'Thompsons Gazelle'\n           WHEN LOWER(sp2) IN ('kudu, lesser', 'lesser kudu') THEN 'Lesser Kudu'\n           WHEN LOWER(sp2) IN ('kudu, greater', 'greater kudu') THEN 'Greater Kudu'\n           WHEN LOWER(sp2) IN ('jackal, side striped', 'side striped jackal', 'side-striped jackal') THEN 'Side-striped Jackal'\n           WHEN LOWER(sp2) IN ('jackal, black backed', 'black backed jackal', 'black-backed jackal') THEN 'Black-backed Jackal'\n           ELSE UPPER(SUBSTR(sp2, 1, 1)) || SUBSTR(sp2, 2)\n         END AS sp_h\n  FROM (\n    -- \"Hyena - Spotted\" -> \"Spotted Hyena\"\n    SELECT *,\n           CASE WHEN INSTR(sp1, ' - ') > 0\n                THEN TRIM(SUBSTR(sp1, INSTR(sp1, ' - ') + 3)) || ' ' || TRIM(SUBSTR(sp1, 1, INSTR(sp1, ' - ') - 1))\n                ELSE sp1 END AS sp2\n    FROM (\n      -- ER labels are bilingual: \"Lion / Simba\", \"Elephant / Ndovu (Tembo)\".\n      -- Keep the English half so one animal gives one bar.\n      SELECT *,\n             TRIM(CASE WHEN INSTR(sp_raw, ' / ') > 0 THEN SUBSTR(sp_raw, 1, INSTR(sp_raw, ' / ') - 1)\n                       ELSE sp_raw END) AS sp1\n      FROM (\n        -- Human Injury titles it \"Species Responsible\", Human Death\n        -- \"Species responsible\". JSON keys are case-sensitive, so read both.\n        SELECT *,\n               CASE WHEN event_type IN ('human_injury', 'human_death')\n                      THEN COALESCE(json_extract(event_details, '$.\"Species responsible\"'),\n                                    json_extract(event_details, '$.\"Species Responsible\"'))\n                    WHEN event_type IN ('hwc_livestock_predation', 'crop_damage', 'infrastructure_damage',\n                                        'animal_carcass', 'sick_injured_animal')\n                      THEN json_extract(event_details, '$.\"Species\"')\n               END AS sp_raw\n        -- Collection CONTAINER events are excluded here, not later. A\n        -- collection is itself an event record with is_collection\n        -- true, and counting it alongside its children would double-count\n        -- the incident and, worse, add a row with no conflict fields\n        -- of its own. Written as a NOT-true test rather than = 0 so a\n        -- missing column (NULL) keeps the row.\n        FROM df\n        WHERE COALESCE(is_collection, 0) NOT IN (1, 'true', 'True')\n      )\n    )\n  )\n)\n)\n",
+            query="SELECT *,\n       MIN(report_time) OVER (PARTITION BY incident_id) AS incident_time,\n       FIRST_VALUE(geometry) OVER (\n         PARTITION BY incident_id ORDER BY report_time, id\n       ) AS incident_geometry,\n       ROW_NUMBER() OVER (\n         PARTITION BY CASE WHEN is_conflict = 1 THEN incident_id END\n         ORDER BY report_time, id\n       ) AS conflict_seq\nFROM (\nSELECT id, serial_number, event_type, event_type_display, event_category,\n       event_details, geometry,\n\n       -- note_txt, incident_id, species_h, wl_cause: see the YAML\n       -- notes above this task. They are up there because this query\n       -- is capped at 10,000 characters, comments included.\n       NULLIF(TRIM(COALESCE(\n         CASE WHEN json_valid(notes) = 1\n              THEN COALESCE(json_extract(notes, '$[0].text'),\n                            json_extract(notes, '$[0].note')) END,\n         NULLIF(CAST(notes AS TEXT), '[]'))), '') AS note_txt,\n\n       COALESCE(json_extract(is_contained_in, '$[0].id'), id) AS incident_id,\n\n       strftime('%Y-%m-%dT%H:%M:%SZ', COALESCE(\n         CASE\n           WHEN event_type IN ('human_injury', 'crop_damage',\n                'infrastructure_damage') THEN json_extract(event_details, '$.\"Incident date & time\"')\n           WHEN event_type = 'poisoning' THEN COALESCE(\n                json_extract(event_details, '$.\"Date & Time\"'),\n                json_extract(event_details, '$.\"Date & time\"'))\n         END,\n         time)) AS report_time,\n\n       CASE\n         WHEN event_type = 'hwc_livestock_predation' THEN 1\n         WHEN event_type = 'human_injury'\n              AND json_extract(event_details, '$.\"Cause of injury\"') = 'Human-wildlife conflict' THEN 1\n         WHEN event_type = 'human_death'\n              AND json_extract(event_details, '$.\"Cause\"') = 'Human-wildlife conflict' THEN 1\n         WHEN event_type IN ('crop_damage', 'infrastructure_damage')\n              AND json_extract(event_details, '$.\"Cause of damage\"') = 'Wildlife' THEN 1\n         WHEN event_type = 'animal_carcass'\n              AND json_extract(event_details, '$.\"Type of Death\"') LIKE 'Conflict%' THEN 1\n         -- the live choice label is \"Conflict - fill in relevant HWC form\"\n         WHEN event_type = 'sick_injured_animal'\n              AND json_extract(event_details, '$.\"Type of Injury\"') LIKE 'Conflict%' THEN 1\n         WHEN event_type = 'poisoning'\n              AND json_extract(event_details, '$.\"Suspected motive\"') = 'HWC retaliation' THEN 1\n         ELSE 0\n       END AS is_conflict,\n\n       CASE event_type\n         WHEN 'hwc_livestock_predation' THEN 'Livestock predation'\n         WHEN 'human_injury'            THEN 'Human injury'\n         WHEN 'human_death'             THEN 'Human death'\n         WHEN 'crop_damage'             THEN 'Crop damage'\n         WHEN 'infrastructure_damage'   THEN 'Infrastructure damage'\n         WHEN 'animal_carcass'          THEN 'Wildlife death'\n         WHEN 'sick_injured_animal'     THEN 'Wildlife injury'\n         WHEN 'poisoning'               THEN 'Poisoning'\n         ELSE event_type_display\n       END AS conflict_type,\n\n       CASE WHEN event_type IN ('animal_carcass', 'sick_injured_animal') THEN 'Unknown' ELSE sp_h END AS species_h,\n       CASE WHEN event_type IN ('animal_carcass', 'sick_injured_animal') THEN sp_h END AS animal_h,\n\n       COALESCE(json_extract(event_details, '$.\"Cause of Death (CONFLICT)\"'),\n                json_extract(event_details, '$.\"Cause of Injury (CONFLICT)\"'),\n                json_extract(event_details, '$.\"Cause of Death (POACHED)\"'),\n                json_extract(event_details, '$.\"Cause of Injury (POACHED)\"'),\n                json_extract(event_details, '$.\"Cause of Death (PAC)\"'),\n                json_extract(event_details, '$.\"Cause of Injury (PAC)\"'),\n                json_extract(event_details, '$.\"Cause of Death (NATURAL)\"'),\n                json_extract(event_details, '$.\"Cause of Injury (NATURAL)\"'),\n                json_extract(event_details, '$.\"Cause of Injury (UNKNOWN)\"'),\n                json_extract(event_details, '$.\"Cause of Death\"'),\n                json_extract(event_details, '$.\"Cause of Injury\"')) AS wl_cause,\n\n       CASE WHEN COALESCE(json_extract(event_details, '$.\"Retaliation action taken?\"'),\n                          json_extract(event_details, '$.\"Retaliation action taken\"'))\n                 IN (1, 'true', 'True', 'Yes') THEN 1 ELSE 0 END AS ret_taken,\n       CASE WHEN COALESCE(json_extract(event_details, '$.\"Retaliation action threatened?\"'),\n                          json_extract(event_details, '$.\"Retaliation action threatened\"'))\n                 IN (1, 'true', 'True', 'Yes') THEN 1 ELSE 0 END AS ret_threatened,\n\n       -- Multi-selects arrive as JSON arrays. Flatten to \"a, b\" for display.\n       NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CAST(COALESCE(\n         json_extract(event_details, '$.\"Evidence of retaliation?\"'),\n         json_extract(event_details, '$.\"Evidence of retaliation\"')) AS TEXT),\n         '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), '') AS ret_evidence,\n       NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CAST(COALESCE(\n         json_extract(event_details, '$.\"Action\"'),\n         json_extract(event_details, '$.\"Action taken\"'),\n         json_extract(event_details, '$.\"Action Taken\"')) AS TEXT),\n         '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), '') AS action_txt\n\nFROM (\n  SELECT *,\n         CASE\n           WHEN sp2 IS NULL OR sp2 = '' THEN 'Unknown'\n           WHEN LOWER(sp2) IN ('baboon, olive', 'baboon olive', 'olive baboon') THEN 'Olive Baboon'\n           WHEN LOWER(sp2) IN ('hyena, spotted', 'hyena spotted', 'spotted hyena') THEN 'Spotted Hyena'\n           WHEN LOWER(sp2) IN ('hyena, striped', 'hyena striped', 'striped hyena') THEN 'Striped Hyena'\n           WHEN LOWER(sp2) IN ('zebra, burchells', 'burchells zebra') THEN 'Burchells Zebra'\n           WHEN LOWER(sp2) IN ('zebra, grevys', 'grevys zebra') THEN 'Grevys Zebra'\n           WHEN LOWER(sp2) IN ('gazelle, grants', 'grants gazelle') THEN 'Grants Gazelle'\n           WHEN LOWER(sp2) IN ('gazelle, thompsons', 'thompsons gazelle') THEN 'Thompsons Gazelle'\n           WHEN LOWER(sp2) IN ('kudu, lesser', 'lesser kudu') THEN 'Lesser Kudu'\n           WHEN LOWER(sp2) IN ('kudu, greater', 'greater kudu') THEN 'Greater Kudu'\n           WHEN LOWER(sp2) IN ('jackal, side striped', 'side striped jackal', 'side-striped jackal') THEN 'Side-striped Jackal'\n           WHEN LOWER(sp2) IN ('jackal, black backed', 'black backed jackal', 'black-backed jackal') THEN 'Black-backed Jackal'\n           ELSE UPPER(SUBSTR(sp2, 1, 1)) || SUBSTR(sp2, 2)\n         END AS sp_h\n  FROM (\n    -- \"Hyena - Spotted\" -> \"Spotted Hyena\"\n    SELECT *,\n           CASE WHEN INSTR(sp1, ' - ') > 0\n                THEN TRIM(SUBSTR(sp1, INSTR(sp1, ' - ') + 3)) || ' ' || TRIM(SUBSTR(sp1, 1, INSTR(sp1, ' - ') - 1))\n                ELSE sp1 END AS sp2\n    FROM (\n      -- ER labels are bilingual: \"Lion / Simba\", \"Elephant / Ndovu (Tembo)\".\n      -- Keep the English half so one animal gives one bar.\n      SELECT *,\n             TRIM(CASE WHEN INSTR(sp_raw, ' / ') > 0 THEN SUBSTR(sp_raw, 1, INSTR(sp_raw, ' / ') - 1)\n                       ELSE sp_raw END) AS sp1\n      FROM (\n        -- Human Injury titles it \"Species Responsible\", Human Death\n        -- \"Species responsible\". JSON keys are case-sensitive, so read both.\n        SELECT *,\n               CASE WHEN event_type IN ('human_injury', 'human_death')\n                      THEN COALESCE(json_extract(event_details, '$.\"Species responsible\"'),\n                                    json_extract(event_details, '$.\"Species Responsible\"'))\n                    WHEN event_type IN ('hwc_livestock_predation', 'crop_damage', 'infrastructure_damage',\n                                        'animal_carcass', 'sick_injured_animal')\n                      THEN json_extract(event_details, '$.\"Species\"')\n               END AS sp_raw\n        -- Collection CONTAINER events are excluded here, not later. A\n        -- collection is itself an event record with is_collection\n        -- true, and counting it alongside its children would double-count\n        -- the incident and, worse, add a row with no conflict fields\n        -- of its own. Written as a NOT-true test rather than = 0 so a\n        -- missing column (NULL) keeps the row.\n        FROM df\n        -- '1' as well as 1: SQLite will not equate a TEXT '1' with an\n        -- INTEGER 1, so a frame that serialises the boolean as a string\n        -- would let container rows straight through this filter.\n        WHERE COALESCE(is_collection, 0) NOT IN (1, '1', 'true', 'True')\n      )\n    )\n  )\n)\n)\n",
             columns=None,
             sanitize=True,
             **(params.get("events_prepared") or {}),
@@ -429,7 +434,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            query='SELECT\n  -- INCIDENTS, not events. conflict_seq = 1 marks the first qualifying\n  -- event of each incident, so this counts collections-with-a-\n  -- qualifying-child plus uncollected qualifying events, exactly as the\n  -- MRD defines it. Every other figure below deliberately stays at\n  -- EVENT or victim level: "Loss totals are unaffected -- people\n  -- injured, livestock killed etc. still sum over events/victims, so\n  -- Table 1 would show 23 incidents but still 3 people injured."\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND conflict_seq = 1 THEN 1 ELSE 0 END), 0) AS "Total incidents",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'human_injury\' THEN 1 ELSE 0 END), 0) AS "People injured",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'human_death\' THEN 1 ELSE 0 END), 0) AS "People killed",\n  CAST(COALESCE(SUM(CASE WHEN event_type = \'hwc_livestock_predation\'\n               THEN CAST(COALESCE(json_extract(event_details, \'$."Total livestock dead"\'), 0) AS REAL) ELSE 0 END), 0) AS INTEGER) AS "Livestock killed",\n  CAST(COALESCE(SUM(CASE WHEN event_type = \'hwc_livestock_predation\'\n               THEN CAST(COALESCE(json_extract(event_details, \'$."Total livestock injured"\'), 0) AS REAL) ELSE 0 END), 0) AS INTEGER) AS "Livestock injured",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'animal_carcass\' THEN 1 ELSE 0 END), 0) AS "Wildlife killed",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'sick_injured_animal\' THEN 1 ELSE 0 END), 0) AS "Wildlife injured",\n  COALESCE(SUM(CASE WHEN event_type = \'poisoning\' THEN 1 ELSE 0 END), 0) AS "Poisoning events",\n  COALESCE(SUM(ret_taken), 0) AS "Retaliation events"\nFROM df\n',
+            query='SELECT\n  -- INCIDENTS, not events. conflict_seq = 1 marks the first qualifying\n  -- event of each incident, so this counts collections-with-a-\n  -- qualifying-child plus uncollected qualifying events, exactly as the\n  -- MRD defines it. Every other figure below deliberately stays at\n  -- EVENT or victim level: "Loss totals are unaffected -- people\n  -- injured, livestock killed etc. still sum over events/victims, so\n  -- Table 1 would show 23 incidents but still 3 people injured."\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND conflict_seq = 1 THEN 1 ELSE 0 END), 0) AS "Total incidents",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'human_injury\' THEN 1 ELSE 0 END), 0) AS "People injured",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'human_death\' THEN 1 ELSE 0 END), 0) AS "People killed",\n  CAST(COALESCE(SUM(CASE WHEN event_type = \'hwc_livestock_predation\'\n               THEN CAST(COALESCE(json_extract(event_details, \'$."Total livestock dead"\'), 0) AS REAL) ELSE 0 END), 0) AS INTEGER) AS "Livestock killed",\n  CAST(COALESCE(SUM(CASE WHEN event_type = \'hwc_livestock_predation\'\n               THEN CAST(COALESCE(json_extract(event_details, \'$."Total livestock injured"\'), 0) AS REAL) ELSE 0 END), 0) AS INTEGER) AS "Livestock injured",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'animal_carcass\' THEN 1 ELSE 0 END), 0) AS "Wildlife killed",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'sick_injured_animal\' THEN 1 ELSE 0 END), 0) AS "Wildlife injured",\n  COALESCE(SUM(CASE WHEN event_type = \'poisoning\' THEN 1 ELSE 0 END), 0) AS "Poisoning events",\n  COALESCE(SUM(ret_taken), 0) AS "Retaliation recorded"\nFROM df\n',
             columns=None,
             sanitize=True,
             **(params.get("hwc_kpis") or {}),
@@ -883,7 +888,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            column_name="Retaliation events", **(params.get("hwc_kpi_7_val") or {})
+            column_name="Retaliation recorded", **(params.get("hwc_kpi_7_val") or {})
         )
         .mapvalues(argnames=["df"], argvalues=hwc_kpis)
     )
@@ -901,7 +906,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            title="Retaliation Events",
+            title="Retaliation Recorded",
             decimal_places=0,
             **(params.get("hwc_kpi_7_sv") or {}),
         )
@@ -925,29 +930,6 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .call()
     )
 
-    month_kpis = (
-        task(apply_sql_query)
-        .validate()
-        .set_task_instance_id("month_kpis")
-        .handle_errors()
-        .with_tracing()
-        .skipif(
-            conditions=[
-                any_is_empty_df,
-                any_dependency_skipped,
-            ],
-            unpack_depth=1,
-        )
-        .partial(
-            df=events_indexed,
-            query='SELECT strftime(\'%Y-%m\', incident_time) AS "Month",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND conflict_seq = 1 THEN 1 ELSE 0 END), 0) AS "Total incidents",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'human_injury\' THEN 1 ELSE 0 END), 0) AS "People injured",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'human_death\' THEN 1 ELSE 0 END), 0) AS "People killed",\n  CAST(COALESCE(SUM(CASE WHEN event_type = \'hwc_livestock_predation\'\n               THEN CAST(COALESCE(json_extract(event_details, \'$."Total livestock injured"\'), 0) AS REAL) ELSE 0 END), 0) AS INTEGER) AS "Livestock injured",\n  CAST(COALESCE(SUM(CASE WHEN event_type = \'hwc_livestock_predation\'\n               THEN CAST(COALESCE(json_extract(event_details, \'$."Total livestock dead"\'), 0) AS REAL) ELSE 0 END), 0) AS INTEGER) AS "Livestock killed",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'sick_injured_animal\' THEN 1 ELSE 0 END), 0) AS "Wildlife injured",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'animal_carcass\' THEN 1 ELSE 0 END), 0) AS "Wildlife killed",\n  COALESCE(SUM(CASE WHEN event_type = \'poisoning\' THEN 1 ELSE 0 END), 0) AS "Poisoning events",\n  COALESCE(SUM(ret_taken), 0) AS "Retaliation recorded"\nFROM df\nGROUP BY 1 ORDER BY 1\n',
-            columns=None,
-            sanitize=True,
-            **(params.get("month_kpis") or {}),
-        )
-        .call()
-    )
-
     period_kpis = (
         task(apply_sql_query)
         .validate()
@@ -963,56 +945,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         )
         .partial(
             df=events_indexed,
-            query='SELECT\n  -- INCIDENTS, not events. conflict_seq = 1 marks the first qualifying\n  -- event of each incident, so this counts collections-with-a-\n  -- qualifying-child plus uncollected qualifying events, exactly as the\n  -- MRD defines it. Every other figure below deliberately stays at\n  -- EVENT or victim level: "Loss totals are unaffected -- people\n  -- injured, livestock killed etc. still sum over events/victims, so\n  -- Table 1 would show 23 incidents but still 3 people injured."\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND conflict_seq = 1 THEN 1 ELSE 0 END), 0) AS "Total incidents",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'human_injury\' THEN 1 ELSE 0 END), 0) AS "People injured",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'human_death\' THEN 1 ELSE 0 END), 0) AS "People killed",\n  CAST(COALESCE(SUM(CASE WHEN event_type = \'hwc_livestock_predation\'\n               THEN CAST(COALESCE(json_extract(event_details, \'$."Total livestock dead"\'), 0) AS REAL) ELSE 0 END), 0) AS INTEGER) AS "Livestock killed",\n  CAST(COALESCE(SUM(CASE WHEN event_type = \'hwc_livestock_predation\'\n               THEN CAST(COALESCE(json_extract(event_details, \'$."Total livestock injured"\'), 0) AS REAL) ELSE 0 END), 0) AS INTEGER) AS "Livestock injured",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'animal_carcass\' THEN 1 ELSE 0 END), 0) AS "Wildlife killed",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'sick_injured_animal\' THEN 1 ELSE 0 END), 0) AS "Wildlife injured",\n  COALESCE(SUM(CASE WHEN event_type = \'poisoning\' THEN 1 ELSE 0 END), 0) AS "Poisoning events",\n  COALESCE(SUM(ret_taken), 0) AS "Retaliation events"\nFROM df\n',
+            query='SELECT\n  -- INCIDENTS, not events. conflict_seq = 1 marks the first qualifying\n  -- event of each incident, so this counts collections-with-a-\n  -- qualifying-child plus uncollected qualifying events, exactly as the\n  -- MRD defines it. Every other figure below deliberately stays at\n  -- EVENT or victim level: "Loss totals are unaffected -- people\n  -- injured, livestock killed etc. still sum over events/victims, so\n  -- Table 1 would show 23 incidents but still 3 people injured."\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND conflict_seq = 1 THEN 1 ELSE 0 END), 0) AS "Total incidents",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'human_injury\' THEN 1 ELSE 0 END), 0) AS "People injured",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'human_death\' THEN 1 ELSE 0 END), 0) AS "People killed",\n  CAST(COALESCE(SUM(CASE WHEN event_type = \'hwc_livestock_predation\'\n               THEN CAST(COALESCE(json_extract(event_details, \'$."Total livestock dead"\'), 0) AS REAL) ELSE 0 END), 0) AS INTEGER) AS "Livestock killed",\n  CAST(COALESCE(SUM(CASE WHEN event_type = \'hwc_livestock_predation\'\n               THEN CAST(COALESCE(json_extract(event_details, \'$."Total livestock injured"\'), 0) AS REAL) ELSE 0 END), 0) AS INTEGER) AS "Livestock injured",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'animal_carcass\' THEN 1 ELSE 0 END), 0) AS "Wildlife killed",\n  COALESCE(SUM(CASE WHEN is_conflict = 1 AND event_type = \'sick_injured_animal\' THEN 1 ELSE 0 END), 0) AS "Wildlife injured",\n  COALESCE(SUM(CASE WHEN event_type = \'poisoning\' THEN 1 ELSE 0 END), 0) AS "Poisoning events",\n  COALESCE(SUM(ret_taken), 0) AS "Retaliation recorded"\nFROM df\n',
             columns=None,
             sanitize=True,
             **(params.get("period_kpis") or {}),
-        )
-        .call()
-    )
-
-    period_ctype = (
-        task(apply_sql_query)
-        .validate()
-        .set_task_instance_id("period_ctype")
-        .handle_errors()
-        .with_tracing()
-        .skipif(
-            conditions=[
-                any_is_empty_df,
-                any_dependency_skipped,
-            ],
-            unpack_depth=1,
-        )
-        .partial(
-            df=events_indexed,
-            query='SELECT conflict_type AS "Conflict type", COUNT(*) AS "Incidents"\nFROM df WHERE is_conflict = 1\nGROUP BY 1 ORDER BY 2 DESC\n',
-            columns=None,
-            sanitize=True,
-            **(params.get("period_ctype") or {}),
-        )
-        .call()
-    )
-
-    period_species = (
-        task(apply_sql_query)
-        .validate()
-        .set_task_instance_id("period_species")
-        .handle_errors()
-        .with_tracing()
-        .skipif(
-            conditions=[
-                any_is_empty_df,
-                any_dependency_skipped,
-            ],
-            unpack_depth=1,
-        )
-        .partial(
-            df=events_indexed,
-            query="SELECT species_h AS \"Species responsible\",\n       SUM(CASE WHEN conflict_type = 'Livestock predation'    THEN 1 ELSE 0 END) AS \"Livestock predation\",\n       SUM(CASE WHEN conflict_type = 'Crop damage'            THEN 1 ELSE 0 END) AS \"Crop damage\",\n       SUM(CASE WHEN conflict_type = 'Infrastructure damage'  THEN 1 ELSE 0 END) AS \"Infrastructure damage\",\n       SUM(CASE WHEN conflict_type = 'Human injury'           THEN 1 ELSE 0 END) AS \"Human injury\",\n       SUM(CASE WHEN conflict_type = 'Human death'            THEN 1 ELSE 0 END) AS \"Human death\",\n       COUNT(*) AS \"Total\"\nFROM df WHERE is_conflict = 1\n  AND event_type IN ('hwc_livestock_predation', 'crop_damage',\n                     'infrastructure_damage', 'human_injury', 'human_death')\nGROUP BY 1 ORDER BY 7 DESC\n",
-            columns=None,
-            sanitize=True,
-            **(params.get("period_species") or {}),
         )
         .call()
     )
@@ -1031,7 +967,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            query='SELECT conflict_type AS "Conflict type", COUNT(*) AS "Incidents"\nFROM df WHERE is_conflict = 1\nGROUP BY 1 ORDER BY 2 DESC\n',
+            query='SELECT conflict_type AS "Conflict type", COUNT(*) AS "Events"\nFROM df WHERE is_conflict = 1\nGROUP BY 1 ORDER BY 2 DESC\n',
             columns=None,
             sanitize=True,
             **(params.get("ctype_counts") or {}),
@@ -1039,10 +975,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
-    ctype_bar = (
-        task(draw_bar_chart)
+    ctype_cmap = (
+        task(apply_color_map)
         .validate()
-        .set_task_instance_id("ctype_bar")
+        .set_task_instance_id("ctype_cmap")
         .handle_errors()
         .with_tracing()
         .skipif(
@@ -1053,20 +989,45 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            category="Conflict type",
-            bar_chart_configs=[
-                {
-                    "label": "Incidents",
-                    "column": "Incidents",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#b62879"},
-                }
-            ],
-            layout_kwargs=None,
-            **(params.get("ctype_bar") or {}),
+            input_column_name="Conflict type",
+            colormap={
+                "Crop damage": "#b62879",
+                "Human death": "#8c1700",
+                "Human injury": "#ed3ea2",
+                "Infrastructure damage": "#ff803e",
+                "Livestock predation": "#3e35a3",
+                "Poisoning": "#a100cb",
+                "Wildlife death": "#004e26",
+                "Wildlife injury": "#7ab800",
+            },
+            output_column_name="ctype_color",
+            **(params.get("ctype_cmap") or {}),
         )
-        .mapvalues(argnames=["dataframe"], argvalues=ctype_counts)
+        .mapvalues(argnames=["df"], argvalues=ctype_counts)
+    )
+
+    ctype_pie = (
+        task(draw_pie_chart)
+        .validate()
+        .set_task_instance_id("ctype_pie")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            value_column="Events",
+            label_column="Conflict type",
+            color_column="ctype_color",
+            plot_style={"textinfo": "value+percent"},
+            layout_style={"showlegend": True, "legend_title": "Conflict type"},
+            **(params.get("ctype_pie") or {}),
+        )
+        .mapvalues(argnames=["dataframe"], argvalues=ctype_cmap)
     )
 
     ctype_bar_html = (
@@ -1084,10 +1045,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         )
         .partial(
             root_path=os.environ["ECOSCOPE_WORKFLOWS_RESULTS"],
-            filename_suffix="conflict_type_bar",
+            filename_suffix="conflict_type_pie",
             **(params.get("ctype_bar_html") or {}),
         )
-        .mapvalues(argnames=["text"], argvalues=ctype_bar)
+        .mapvalues(argnames=["text"], argvalues=ctype_pie)
     )
 
     ctype_bar_w = (
@@ -1102,9 +1063,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             ],
             unpack_depth=1,
         )
-        .partial(
-            title="Incidents by Conflict Type", **(params.get("ctype_bar_w") or {})
-        )
+        .partial(title="Conflict Events by Type", **(params.get("ctype_bar_w") or {}))
         .map(argnames=["view", "data"], argvalues=ctype_bar_html)
     )
 
@@ -1125,6 +1084,124 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .call()
     )
 
+    trend_df = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("trend_df")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query="SELECT mon.\"Month\" AS \"Month\",\n       typ.\"Conflict type\" AS \"Conflict type\",\n       COALESCE(cnt.n, 0) AS \"Incidents\"\nFROM (\n  SELECT substr('000' || CAST((b.lo + s.n) / 12 AS TEXT), -4, 4) || '-' ||\n         substr('0' || CAST(((b.lo + s.n) % 12) + 1 AS TEXT), -2, 2) AS \"Month\"\n  FROM (\n    SELECT MIN(CAST(substr(incident_time, 1, 4) AS INTEGER) * 12\n               + CAST(substr(incident_time, 6, 2) AS INTEGER) - 1) AS lo,\n           MAX(CAST(substr(incident_time, 1, 4) AS INTEGER) * 12\n               + CAST(substr(incident_time, 6, 2) AS INTEGER) - 1) AS hi\n    FROM df WHERE incident_time IS NOT NULL\n  ) b\n  JOIN (SELECT ROW_NUMBER() OVER () - 1 AS n FROM df LIMIT 1200) s\n    ON b.lo + s.n <= b.hi\n) mon\nCROSS JOIN (\n            SELECT 'Crop damage' AS \"Conflict type\"\n  UNION ALL SELECT 'Human death'\n  UNION ALL SELECT 'Human injury'\n  UNION ALL SELECT 'Infrastructure damage'\n  UNION ALL SELECT 'Livestock predation'\n  UNION ALL SELECT 'Poisoning'\n  UNION ALL SELECT 'Wildlife death'\n  UNION ALL SELECT 'Wildlife injury'\n) typ\nLEFT JOIN (\n  SELECT strftime('%Y-%m', incident_time) AS mth,\n         conflict_type AS ct, COUNT(*) AS n\n  FROM df WHERE is_conflict = 1 GROUP BY 1, 2\n) cnt ON cnt.mth = mon.\"Month\" AND cnt.ct = typ.\"Conflict type\"\nORDER BY 1, 2\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("trend_df") or {}),
+        )
+        .call()
+    )
+
+    trend_chart = (
+        task(draw_chart)
+        .validate()
+        .set_task_instance_id("trend_chart")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            dataframe=trend_df,
+            x_axis="Month",
+            figures=[
+                {
+                    "metric": {
+                        "display_name": "Incidents",
+                        "aggregator": "sum",
+                        "column": "Incidents",
+                        "decimal_places": 0,
+                    },
+                    "chart_type": "bar",
+                }
+            ],
+            time_interval=None,
+            category="Conflict type",
+            time_breakdown=None,
+            barmode="stack",
+            palette=[
+                "#b62879",
+                "#8c1700",
+                "#ed3ea2",
+                "#ff803e",
+                "#3e35a3",
+                "#a100cb",
+                "#004e26",
+                "#7ab800",
+            ],
+            plot_style=None,
+            layout_style={
+                "showlegend": True,
+                "legend_title": "Conflict type",
+                "xaxis": {"title": "Month"},
+                "yaxis": {"title": "Conflict events"},
+            },
+            **(params.get("trend_chart") or {}),
+        )
+        .call()
+    )
+
+    trend_html = (
+        task(persist_text)
+        .validate()
+        .set_task_instance_id("trend_html")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            text=trend_chart,
+            root_path=os.environ["ECOSCOPE_WORKFLOWS_RESULTS"],
+            filename_suffix="conflict_trend",
+            **(params.get("trend_html") or {}),
+        )
+        .call()
+    )
+
+    trend_w = (
+        task(create_plot_widget_single_view)
+        .validate()
+        .set_task_instance_id("trend_w")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                never,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            title="Conflict Events per Month by Type",
+            data=trend_html,
+            **(params.get("trend_w") or {}),
+        )
+        .call()
+    )
+
     species_x = (
         task(apply_sql_query)
         .validate()
@@ -1139,7 +1216,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            query="SELECT species_h AS \"Species responsible\",\n       SUM(CASE WHEN conflict_type = 'Livestock predation'    THEN 1 ELSE 0 END) AS \"Livestock predation\",\n       SUM(CASE WHEN conflict_type = 'Crop damage'            THEN 1 ELSE 0 END) AS \"Crop damage\",\n       SUM(CASE WHEN conflict_type = 'Infrastructure damage'  THEN 1 ELSE 0 END) AS \"Infrastructure damage\",\n       SUM(CASE WHEN conflict_type = 'Human injury'           THEN 1 ELSE 0 END) AS \"Human injury\",\n       SUM(CASE WHEN conflict_type = 'Human death'            THEN 1 ELSE 0 END) AS \"Human death\",\n       COUNT(*) AS \"Total\"\nFROM df WHERE is_conflict = 1\n  AND event_type IN ('hwc_livestock_predation', 'crop_damage',\n                     'infrastructure_damage', 'human_injury', 'human_death')\nGROUP BY 1 ORDER BY 7 DESC\n",
+            query="SELECT sp.\"Species responsible\" AS \"Species responsible\",\n       typ.\"Conflict type\" AS \"Conflict type\",\n       COALESCE(cnt.n, 0) AS \"Events\"\nFROM (\n  SELECT species_h AS \"Species responsible\", COUNT(*) AS total\n  FROM df WHERE is_conflict = 1\n    AND event_type IN ('hwc_livestock_predation', 'crop_damage',\n                       'infrastructure_damage', 'human_injury', 'human_death')\n  GROUP BY 1\n) sp\nCROSS JOIN (\n            SELECT 'Crop damage' AS \"Conflict type\"\n  UNION ALL SELECT 'Human death'\n  UNION ALL SELECT 'Human injury'\n  UNION ALL SELECT 'Infrastructure damage'\n  UNION ALL SELECT 'Livestock predation'\n) typ\nLEFT JOIN (\n  SELECT species_h AS sp_name, conflict_type AS ct, COUNT(*) AS n\n  FROM df WHERE is_conflict = 1\n    AND event_type IN ('hwc_livestock_predation', 'crop_damage',\n                       'infrastructure_damage', 'human_injury', 'human_death')\n  GROUP BY 1, 2\n) cnt ON cnt.sp_name = sp.\"Species responsible\"\n     AND cnt.ct = typ.\"Conflict type\"\nORDER BY sp.total DESC, 1, 2\n",
             columns=None,
             sanitize=True,
             **(params.get("species_x") or {}),
@@ -1148,7 +1225,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
     )
 
     species_bar = (
-        task(draw_bar_chart)
+        task(draw_chart)
         .validate()
         .set_task_instance_id("species_bar")
         .handle_errors()
@@ -1161,45 +1238,30 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            category="Species responsible",
-            bar_chart_configs=[
+            x_axis="Species responsible",
+            figures=[
                 {
-                    "label": "Livestock predation",
-                    "column": "Livestock predation",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#3e35a3"},
-                },
-                {
-                    "label": "Crop damage",
-                    "column": "Crop damage",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#b62879"},
-                },
-                {
-                    "label": "Infrastructure damage",
-                    "column": "Infrastructure damage",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#ff803e"},
-                },
-                {
-                    "label": "Human injury",
-                    "column": "Human injury",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#ed3ea2"},
-                },
-                {
-                    "label": "Human death",
-                    "column": "Human death",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#3089ff"},
-                },
+                    "metric": {
+                        "display_name": "Events",
+                        "aggregator": "sum",
+                        "column": "Events",
+                        "decimal_places": 0,
+                    },
+                    "chart_type": "bar",
+                }
             ],
-            layout_kwargs=None,
+            time_interval=None,
+            category="Conflict type",
+            time_breakdown=None,
+            barmode="stack",
+            palette=["#b62879", "#8c1700", "#ed3ea2", "#ff803e", "#3e35a3"],
+            plot_style=None,
+            layout_style={
+                "showlegend": True,
+                "legend_title": "Conflict type",
+                "xaxis": {"title": "Species responsible"},
+                "yaxis": {"title": "Conflict events"},
+            },
             **(params.get("species_bar") or {}),
         )
         .mapvalues(argnames=["dataframe"], argvalues=species_x)
@@ -1296,16 +1358,16 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         )
         .partial(
             input_column_name="Conflict type",
-            colormap=[
-                "#3e35a3",
-                "#b62879",
-                "#ff803e",
-                "#ed3ea2",
-                "#3089ff",
-                "#8c1700",
-                "#a100cb",
-                "#004e26",
-            ],
+            colormap={
+                "Crop damage": "#b62879",
+                "Human death": "#8c1700",
+                "Human injury": "#ed3ea2",
+                "Infrastructure damage": "#ff803e",
+                "Livestock predation": "#3e35a3",
+                "Poisoning": "#a100cb",
+                "Wildlife death": "#004e26",
+                "Wildlife injury": "#7ab800",
+            },
             output_column_name="inc_color",
             **(params.get("inc_cmap") or {}),
         )
@@ -1362,7 +1424,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             title=None,
             north_arrow_style={"placement": "top-left"},
             legend_style={"placement": "bottom-right"},
-            max_zoom=20,
+            max_zoom=15,
             **(params.get("inc_map") or {}),
         )
         .mapvalues(argnames=["geo_layers"], argvalues=inc_layer)
@@ -1422,10 +1484,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .call()
     )
 
-    trend_df = (
+    evt_points = (
         task(apply_sql_query)
         .validate()
-        .set_task_instance_id("trend_df")
+        .set_task_instance_id("evt_points")
         .handle_errors()
         .with_tracing()
         .skipif(
@@ -1436,19 +1498,18 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            df=events_indexed,
-            query="SELECT id, conflict_type, report_time FROM df WHERE is_conflict = 1\n",
+            query='SELECT geometry,\n       conflict_type AS "Conflict type", species_h AS "Species responsible",\n       substr(report_time, 1, 16) AS "Date", serial_number AS "Serial"\nFROM df\nWHERE is_conflict = 1 AND geometry IS NOT NULL\n',
             columns=None,
             sanitize=True,
-            **(params.get("trend_df") or {}),
+            **(params.get("evt_points") or {}),
         )
-        .call()
+        .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
-    trend_time = (
-        task(extract_column_as_type)
+    evt_cmap = (
+        task(apply_color_map)
         .validate()
-        .set_task_instance_id("trend_time")
+        .set_task_instance_id("evt_cmap")
         .handle_errors()
         .with_tracing()
         .skipif(
@@ -1459,20 +1520,58 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            df=trend_df,
-            column_name="report_time",
-            output_type="datetime",
-            output_column_name="report_time",
-            fan_out=True,
-            **(params.get("trend_time") or {}),
+            input_column_name="Conflict type",
+            colormap={
+                "Crop damage": "#b62879",
+                "Human death": "#8c1700",
+                "Human injury": "#ed3ea2",
+                "Infrastructure damage": "#ff803e",
+                "Livestock predation": "#3e35a3",
+                "Poisoning": "#a100cb",
+                "Wildlife death": "#004e26",
+                "Wildlife injury": "#7ab800",
+            },
+            output_column_name="evt_color",
+            **(params.get("evt_cmap") or {}),
         )
-        .call()
+        .mapvalues(argnames=["df"], argvalues=evt_points)
     )
 
-    trend_chart = (
-        task(draw_time_series_bar_chart)
+    evt_layer = (
+        task(create_point_layer)
         .validate()
-        .set_task_instance_id("trend_chart")
+        .set_task_instance_id("evt_layer")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+                all_geometry_are_none,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            layer_style={
+                "get_radius": 6.0,
+                "radius_units": "pixels",
+                "fill_color_column": "evt_color",
+                "get_line_color": "#ffffff",
+                "stroked": True,
+                "get_line_width": 1,
+                "opacity": 0.85,
+            },
+            legend={"label_column": "Conflict type", "color_column": "evt_color"},
+            tooltip_columns=["Conflict type", "Species responsible", "Date", "Serial"],
+            **(params.get("evt_layer") or {}),
+        )
+        .mapvalues(argnames=["geodataframe"], argvalues=evt_cmap)
+    )
+
+    evt_map = (
+        task(draw_ecomap)
+        .validate()
+        .set_task_instance_id("evt_map")
         .handle_errors()
         .with_tracing()
         .skipif(
@@ -1483,24 +1582,21 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            dataframe=trend_time,
-            x_axis="report_time",
-            y_axis="id",
-            category="conflict_type",
-            agg_function="count",
-            time_interval="month",
-            color_column=None,
-            plot_style=None,
-            layout_style=None,
-            **(params.get("trend_chart") or {}),
+            tile_layers=base_map_defs,
+            static=False,
+            title=None,
+            north_arrow_style={"placement": "top-left"},
+            legend_style={"placement": "bottom-right"},
+            max_zoom=15,
+            **(params.get("evt_map") or {}),
         )
-        .call()
+        .mapvalues(argnames=["geo_layers"], argvalues=evt_layer)
     )
 
-    trend_html = (
+    evt_map_html = (
         task(persist_text)
         .validate()
-        .set_task_instance_id("trend_html")
+        .set_task_instance_id("evt_map_html")
         .handle_errors()
         .with_tracing()
         .skipif(
@@ -1511,18 +1607,17 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            text=trend_chart,
             root_path=os.environ["ECOSCOPE_WORKFLOWS_RESULTS"],
-            filename_suffix="conflict_trend",
-            **(params.get("trend_html") or {}),
+            filename_suffix="event_map",
+            **(params.get("evt_map_html") or {}),
         )
-        .call()
+        .mapvalues(argnames=["text"], argvalues=evt_map)
     )
 
-    trend_w = (
-        task(create_plot_widget_single_view)
+    evt_map_w = (
+        task(create_map_widget_single_view)
         .validate()
-        .set_task_instance_id("trend_w")
+        .set_task_instance_id("evt_map_w")
         .handle_errors()
         .with_tracing()
         .skipif(
@@ -1531,11 +1626,24 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             ],
             unpack_depth=1,
         )
-        .partial(
-            title="Conflict Incidents per Month by Type",
-            data=trend_html,
-            **(params.get("trend_w") or {}),
+        .partial(title="Conflict Events", **(params.get("evt_map_w") or {}))
+        .map(argnames=["view", "data"], argvalues=evt_map_html)
+    )
+
+    evt_map_wm = (
+        task(merge_widget_views)
+        .validate()
+        .set_task_instance_id("evt_map_wm")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
         )
+        .partial(widgets=evt_map_w, **(params.get("evt_map_wm") or {}))
         .call()
     )
 
@@ -1553,7 +1661,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            query="SELECT species_h AS \"Species responsible\",\n       SUM(CASE WHEN event_type = 'human_injury' THEN 1 ELSE 0 END) AS \"Injured\",\n       SUM(CASE WHEN event_type = 'human_death'  THEN 1 ELSE 0 END) AS \"Killed\"\nFROM df\nWHERE is_conflict = 1 AND event_type IN ('human_injury', 'human_death')\nGROUP BY 1 ORDER BY 3 DESC, 2 DESC\n",
+            query="SELECT sp.\"Species responsible\" AS \"Species responsible\",\n       o.\"Outcome\" AS \"Outcome\",\n       COALESCE(cnt.n, 0) AS \"People\"\nFROM (\n  SELECT species_h AS \"Species responsible\", COUNT(*) AS total\n  FROM df\n  WHERE is_conflict = 1 AND event_type IN ('human_injury', 'human_death')\n  GROUP BY 1\n) sp\nCROSS JOIN (SELECT 'Injured' AS \"Outcome\" UNION ALL SELECT 'Killed') o\nLEFT JOIN (\n  SELECT species_h AS sp_name,\n         CASE WHEN event_type = 'human_death' THEN 'Killed' ELSE 'Injured' END AS oc,\n         COUNT(*) AS n\n  FROM df\n  WHERE is_conflict = 1 AND event_type IN ('human_injury', 'human_death')\n  GROUP BY 1, 2\n) cnt ON cnt.sp_name = sp.\"Species responsible\" AND cnt.oc = o.\"Outcome\"\nORDER BY sp.total DESC, 1, 2\n",
             columns=None,
             sanitize=True,
             **(params.get("cas_by_species") or {}),
@@ -1562,7 +1670,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
     )
 
     cas_bar = (
-        task(draw_bar_chart)
+        task(draw_chart)
         .validate()
         .set_task_instance_id("cas_bar")
         .handle_errors()
@@ -1575,24 +1683,30 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            category="Species responsible",
-            bar_chart_configs=[
+            x_axis="Species responsible",
+            figures=[
                 {
-                    "label": "Injured",
-                    "column": "Injured",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#ff803e"},
-                },
-                {
-                    "label": "Killed",
-                    "column": "Killed",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#8c1700"},
-                },
+                    "metric": {
+                        "display_name": "People",
+                        "aggregator": "sum",
+                        "column": "People",
+                        "decimal_places": 0,
+                    },
+                    "chart_type": "bar",
+                }
             ],
-            layout_kwargs=None,
+            time_interval=None,
+            category="Outcome",
+            time_breakdown=None,
+            barmode="stack",
+            palette=["#ff803e", "#8c1700"],
+            plot_style=None,
+            layout_style={
+                "showlegend": True,
+                "legend_title": "Outcome",
+                "xaxis": {"title": "Species responsible"},
+                "yaxis": {"title": "People injured or killed"},
+            },
             **(params.get("cas_bar") or {}),
         )
         .mapvalues(argnames=["dataframe"], argvalues=cas_by_species)
@@ -1669,7 +1783,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            query="SELECT substr(report_time, 1, 10) AS \"Date\",\n       -- MRD asks for location and notes on this table. Village/area\n       -- is the only place-name the conflict forms carry, and it is\n       -- free text. The map in section 2 is the precise location.\n       COALESCE(json_extract(event_details, '$.\"village_area\"'),\n                json_extract(event_details, '$.\"Village/Area\"'), '-') AS \"Location\",\n       CASE WHEN event_type = 'human_death' THEN 'Killed' ELSE 'Injured' END AS \"Outcome\",\n       species_h AS \"Species responsible\",\n       COALESCE(json_extract(event_details, '$.\"Age\"'), '-') AS \"Age\",\n       COALESCE(json_extract(event_details, '$.\"Sex\"'), '-') AS \"Sex\",\n       COALESCE(action_txt, '-') AS \"Action taken\",\n       -- Notes: the MRD says \"no PII\", and the incident narrative is\n       -- exactly where a name or a phone number gets typed. Only the\n       -- structured circumstance fields are selected, never a free-text\n       -- note, so the column cannot carry personal detail.\n       COALESCE(json_extract(event_details, '$.\"Activity at time of incident\"'),\n                json_extract(event_details, '$.\"Time of day\"'), '-') AS \"Circumstances\",\n       serial_number AS \"Serial\"\nFROM df\nWHERE is_conflict = 1 AND event_type IN ('human_injury', 'human_death')\nORDER BY 1 DESC\n",
+            query="SELECT substr(report_time, 1, 10) AS \"Date\",\n       -- Review feedback: \"Could we add the event coordinates to the\n       -- 'Location' column\". Village/Area is free text and is the only\n       -- place-name the conflict forms carry. The coordinates come off\n       -- the event geometry, which sanitize hands over as WKT\n       -- (\"POINT (36.9 0.44)\"), so they are parsed out of the string\n       -- and printed latitude first, the order a reader expects.\n       CASE\n         WHEN lon_txt IS NULL THEN village\n         ELSE village || ' (' || lat_txt || ', ' || lon_txt || ')'\n       END AS \"Location\",\n       CASE WHEN event_type = 'human_death' THEN 'Killed' ELSE 'Injured' END AS \"Outcome\",\n       species_h AS \"Species responsible\",\n       COALESCE(json_extract(event_details, '$.\"Age\"'), '-') AS \"Age\",\n       COALESCE(json_extract(event_details, '$.\"Sex\"'), '-') AS \"Sex\",\n       COALESCE(action_txt, '-') AS \"Action taken\",\n       -- Review feedback: \"What is the 'Circumstances' column referring\n       -- to? I think this is best as event notes.\"\n       --\n       -- It used to be the structured circumstance fields (Activity at\n       -- time of incident, Time of day), chosen BECAUSE they cannot\n       -- carry personal detail. The event note is free text, so unlike\n       -- every other column in this table it is not covered by the\n       -- field whitelist: whatever a ranger typed appears verbatim,\n       -- names included. Kept because the review asked for it, and\n       -- flagged here so the decision is visible rather than implied.\n       COALESCE(note_txt, '-') AS \"Notes\",\n       serial_number AS \"Serial\"\nFROM (\n  SELECT *,\n         COALESCE(json_extract(event_details, '$.\"village_area\"'),\n                  json_extract(event_details, '$.\"Village/Area\"'), '-') AS village,\n         NULLIF(substr(wkt, 1, instr(wkt, ' ') - 1), '') AS lon_txt,\n         NULLIF(substr(wkt, instr(wkt, ' ') + 1), '') AS lat_txt\n  FROM (\n    SELECT *,\n           CASE WHEN geometry IS NULL THEN NULL\n                ELSE TRIM(REPLACE(REPLACE(REPLACE(\n                     CAST(geometry AS TEXT), 'POINT', ''), '(', ''), ')', ''))\n           END AS wkt\n    FROM df\n    WHERE is_conflict = 1 AND event_type IN ('human_injury', 'human_death')\n  )\n)\nORDER BY 1 DESC\n",
             columns=None,
             sanitize=True,
             **(params.get("cas_table") or {}),
@@ -1771,7 +1885,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            query="SELECT COALESCE(animal_h, 'Unknown') AS \"Species\",\n       SUM(CASE WHEN event_type = 'animal_carcass'      THEN 1 ELSE 0 END) AS \"Killed\",\n       SUM(CASE WHEN event_type = 'sick_injured_animal' THEN 1 ELSE 0 END) AS \"Injured\"\nFROM df\nWHERE is_conflict = 1 AND event_type IN ('animal_carcass', 'sick_injured_animal')\nGROUP BY 1 ORDER BY 2 DESC, 3 DESC\n",
+            query="SELECT sp.\"Species\" AS \"Species\",\n       o.\"Outcome\" AS \"Outcome\",\n       COALESCE(cnt.n, 0) AS \"Animals\"\nFROM (\n  SELECT COALESCE(animal_h, 'Unknown') AS \"Species\", COUNT(*) AS total\n  FROM df\n  WHERE is_conflict = 1 AND event_type IN ('animal_carcass', 'sick_injured_animal')\n  GROUP BY 1\n) sp\nCROSS JOIN (SELECT 'Injured' AS \"Outcome\" UNION ALL SELECT 'Killed') o\nLEFT JOIN (\n  SELECT COALESCE(animal_h, 'Unknown') AS sp_name,\n         CASE WHEN event_type = 'animal_carcass' THEN 'Killed' ELSE 'Injured' END AS oc,\n         COUNT(*) AS n\n  FROM df\n  WHERE is_conflict = 1 AND event_type IN ('animal_carcass', 'sick_injured_animal')\n  GROUP BY 1, 2\n) cnt ON cnt.sp_name = sp.\"Species\" AND cnt.oc = o.\"Outcome\"\nORDER BY sp.total DESC, 1, 2\n",
             columns=None,
             sanitize=True,
             **(params.get("wl_by_species") or {}),
@@ -1780,7 +1894,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
     )
 
     wl_bar = (
-        task(draw_bar_chart)
+        task(draw_chart)
         .validate()
         .set_task_instance_id("wl_bar")
         .handle_errors()
@@ -1793,24 +1907,30 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            category="Species",
-            bar_chart_configs=[
+            x_axis="Species",
+            figures=[
                 {
-                    "label": "Killed",
-                    "column": "Killed",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#8c1700"},
-                },
-                {
-                    "label": "Injured",
-                    "column": "Injured",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#ff803e"},
-                },
+                    "metric": {
+                        "display_name": "Animals",
+                        "aggregator": "sum",
+                        "column": "Animals",
+                        "decimal_places": 0,
+                    },
+                    "chart_type": "bar",
+                }
             ],
-            layout_kwargs=None,
+            time_interval=None,
+            category="Outcome",
+            time_breakdown=None,
+            barmode="stack",
+            palette=["#ff803e", "#8c1700"],
+            plot_style=None,
+            layout_style={
+                "showlegend": True,
+                "legend_title": "Outcome",
+                "xaxis": {"title": "Species"},
+                "yaxis": {"title": "Animals killed or injured"},
+            },
             **(params.get("wl_bar") or {}),
         )
         .mapvalues(argnames=["dataframe"], argvalues=wl_by_species)
@@ -1893,7 +2013,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
     )
 
     wl_cause_bar = (
-        task(draw_bar_chart)
+        task(draw_pie_chart)
         .validate()
         .set_task_instance_id("wl_cause_bar")
         .handle_errors()
@@ -1906,17 +2026,11 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            category="Cause",
-            bar_chart_configs=[
-                {
-                    "label": "Animals",
-                    "column": "Animals",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#004e26"},
-                }
-            ],
-            layout_kwargs=None,
+            value_column="Animals",
+            label_column="Cause",
+            color_column=None,
+            plot_style={"textinfo": "value+percent"},
+            layout_style={"showlegend": True, "legend_title": "Cause"},
             **(params.get("wl_cause_bar") or {}),
         )
         .mapvalues(argnames=["dataframe"], argvalues=wl_by_cause)
@@ -2073,7 +2187,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             title=None,
             north_arrow_style={"placement": "top-left"},
             legend_style={"placement": "bottom-right"},
-            max_zoom=20,
+            max_zoom=15,
             **(params.get("wl_map") or {}),
         )
         .mapvalues(argnames=["geo_layers"], argvalues=wl_layer)
@@ -2147,7 +2261,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            query="SELECT COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(\n         CAST(json_extract(event_details, '$.\"Livestock species\"') AS TEXT),\n         '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), ''), 'Unspecified') AS \"Livestock species\",\n       CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$.\"Total livestock dead\"'), 0) AS REAL)), 0) AS INTEGER) AS \"Killed\",\n       CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$.\"Total livestock injured\"'), 0) AS REAL)), 0) AS INTEGER) AS \"Injured\"\nFROM df WHERE event_type = 'hwc_livestock_predation'\nGROUP BY 1 ORDER BY 2 DESC\n",
+            query="SELECT a.\"Livestock species\" AS \"Livestock species\",\n       o.\"Outcome\" AS \"Outcome\",\n       CASE WHEN o.\"Outcome\" = 'Killed' THEN a.killed ELSE a.injured END AS \"Animals\"\nFROM (\n  SELECT COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(\n           CAST(json_extract(event_details, '$.\"Livestock species\"') AS TEXT),\n           '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), ''), 'Unspecified') AS \"Livestock species\",\n         CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$.\"Total livestock dead\"'), 0) AS REAL)), 0) AS INTEGER) AS killed,\n         CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$.\"Total livestock injured\"'), 0) AS REAL)), 0) AS INTEGER) AS injured\n  FROM df WHERE event_type = 'hwc_livestock_predation'\n  GROUP BY 1\n) a\nCROSS JOIN (SELECT 'Injured' AS \"Outcome\" UNION ALL SELECT 'Killed') o\nORDER BY a.killed DESC, a.injured DESC, 1, 2\n",
             columns=None,
             sanitize=True,
             **(params.get("pred_by_species") or {}),
@@ -2156,7 +2270,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
     )
 
     pred_bar = (
-        task(draw_bar_chart)
+        task(draw_chart)
         .validate()
         .set_task_instance_id("pred_bar")
         .handle_errors()
@@ -2169,24 +2283,30 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            category="Livestock species",
-            bar_chart_configs=[
+            x_axis="Livestock species",
+            figures=[
                 {
-                    "label": "Killed",
-                    "column": "Killed",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#8c1700"},
-                },
-                {
-                    "label": "Injured",
-                    "column": "Injured",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#ff803e"},
-                },
+                    "metric": {
+                        "display_name": "Animals",
+                        "aggregator": "sum",
+                        "column": "Animals",
+                        "decimal_places": 0,
+                    },
+                    "chart_type": "bar",
+                }
             ],
-            layout_kwargs=None,
+            time_interval=None,
+            category="Outcome",
+            time_breakdown=None,
+            barmode="stack",
+            palette=["#ff803e", "#8c1700"],
+            plot_style=None,
+            layout_style={
+                "showlegend": True,
+                "legend_title": "Outcome",
+                "xaxis": {"title": "Livestock species"},
+                "yaxis": {"title": "Animals killed or injured"},
+            },
             **(params.get("pred_bar") or {}),
         )
         .mapvalues(argnames=["dataframe"], argvalues=pred_by_species)
@@ -2295,7 +2415,12 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                     "style": {"marker_color": "#3e35a3"},
                 }
             ],
-            layout_kwargs=None,
+            layout_kwargs={
+                "showlegend": True,
+                "legend_title": "Measure",
+                "xaxis": {"title": "Predator species"},
+                "yaxis": {"title": "Livestock killed"},
+            },
             **(params.get("pred_pred_bar") or {}),
         )
         .mapvalues(argnames=["dataframe"], argvalues=pred_predators)
@@ -2398,7 +2523,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             label_column="Attack location",
             color_column=None,
             plot_style={"textinfo": "value+percent"},
-            layout_style=None,
+            layout_style={"showlegend": True, "legend_title": "Attack location"},
             **(params.get("pred_where_pie") or {}),
         )
         .mapvalues(argnames=["dataframe"], argvalues=pred_where)
@@ -2565,7 +2690,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             title=None,
             north_arrow_style={"placement": "top-left"},
             legend_style={"placement": "bottom-right"},
-            max_zoom=20,
+            max_zoom=15,
             **(params.get("pred_map") or {}),
         )
         .mapvalues(argnames=["geo_layers"], argvalues=pred_layer)
@@ -2625,6 +2750,116 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .call()
     )
 
+    dmg_trend_df = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("dmg_trend_df")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query='SELECT mon."Month" AS "Month",\n       typ."Damage type" AS "Damage type",\n       COALESCE(cnt.n, 0) AS "Events"\nFROM (\n  SELECT substr(\'000\' || CAST((b.lo + s.n) / 12 AS TEXT), -4, 4) || \'-\' ||\n         substr(\'0\' || CAST(((b.lo + s.n) % 12) + 1 AS TEXT), -2, 2) AS "Month"\n  FROM (\n    SELECT MIN(CAST(substr(incident_time, 1, 4) AS INTEGER) * 12\n               + CAST(substr(incident_time, 6, 2) AS INTEGER) - 1) AS lo,\n           MAX(CAST(substr(incident_time, 1, 4) AS INTEGER) * 12\n               + CAST(substr(incident_time, 6, 2) AS INTEGER) - 1) AS hi\n    FROM df WHERE incident_time IS NOT NULL\n  ) b\n  JOIN (SELECT ROW_NUMBER() OVER () - 1 AS n FROM df LIMIT 1200) s\n    ON b.lo + s.n <= b.hi\n) mon\nCROSS JOIN (\n            SELECT \'Crop damage\' AS "Damage type"\n  UNION ALL SELECT \'Infrastructure damage\'\n) typ\nLEFT JOIN (\n  SELECT strftime(\'%Y-%m\', incident_time) AS mth,\n         conflict_type AS ct, COUNT(*) AS n\n  FROM df\n  WHERE is_conflict = 1 AND event_type IN (\'crop_damage\', \'infrastructure_damage\')\n  GROUP BY 1, 2\n) cnt ON cnt.mth = mon."Month" AND cnt.ct = typ."Damage type"\nORDER BY 1, 2\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("dmg_trend_df") or {}),
+        )
+        .call()
+    )
+
+    dmg_trend = (
+        task(draw_chart)
+        .validate()
+        .set_task_instance_id("dmg_trend")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            dataframe=dmg_trend_df,
+            x_axis="Month",
+            figures=[
+                {
+                    "metric": {
+                        "display_name": "Events",
+                        "aggregator": "sum",
+                        "column": "Events",
+                        "decimal_places": 0,
+                    },
+                    "chart_type": "bar",
+                }
+            ],
+            time_interval=None,
+            category="Damage type",
+            time_breakdown=None,
+            barmode="stack",
+            palette=["#b62879", "#ff803e"],
+            plot_style=None,
+            layout_style={
+                "showlegend": True,
+                "legend_title": "Damage type",
+                "xaxis": {"title": "Month"},
+                "yaxis": {"title": "Damage events"},
+            },
+            **(params.get("dmg_trend") or {}),
+        )
+        .call()
+    )
+
+    dmg_trend_html = (
+        task(persist_text)
+        .validate()
+        .set_task_instance_id("dmg_trend_html")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            root_path=os.environ["ECOSCOPE_WORKFLOWS_RESULTS"],
+            filename_suffix="damage_trend",
+            text=dmg_trend,
+            **(params.get("dmg_trend_html") or {}),
+        )
+        .call()
+    )
+
+    dmg_trend_w = (
+        task(create_plot_widget_single_view)
+        .validate()
+        .set_task_instance_id("dmg_trend_w")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                never,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            title="Crop and Infrastructure Damage over Time",
+            view=None,
+            data=dmg_trend_html,
+            **(params.get("dmg_trend_w") or {}),
+        )
+        .call()
+    )
+
     crop_by_crop = (
         task(apply_sql_query)
         .validate()
@@ -2671,7 +2906,12 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                     "style": {"marker_color": "#b62879"},
                 }
             ],
-            layout_kwargs={"barmode": "stack"},
+            layout_kwargs={
+                "showlegend": True,
+                "legend_title": "Measure",
+                "xaxis": {"title": "Type of crop"},
+                "yaxis": {"title": "Crop damage incidents"},
+            },
             **(params.get("crop_bar") or {}),
         )
         .mapvalues(argnames=["dataframe"], argvalues=crop_by_crop)
@@ -2747,7 +2987,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            query="SELECT COALESCE(json_extract(event_details, '$.\"Extent of damage\"'), 'Not recorded') AS \"Extent\",\n       SUM(CASE WHEN LOWER(cause_txt) LIKE '%uproot%'  THEN 1 ELSE 0 END) AS \"Uprooting\",\n       SUM(CASE WHEN LOWER(cause_txt) LIKE '%trampl%'  THEN 1 ELSE 0 END) AS \"Trampling\",\n       SUM(CASE WHEN LOWER(cause_txt) LIKE '%feed%'\n                  OR LOWER(cause_txt) LIKE '%raid%'    THEN 1 ELSE 0 END) AS \"Feeding / raiding\",\n       SUM(CASE WHEN cause_txt IS NULL OR cause_txt = '' THEN 1 ELSE 0 END) AS \"Not recorded\"\nFROM (\n  SELECT *, NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(\n         CAST(json_extract(event_details, '$.\"Cause of Damage - Wildlife\"') AS TEXT),\n         '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), '') AS cause_txt\n  FROM df WHERE is_conflict = 1 AND event_type IN ('crop_damage', 'infrastructure_damage')\n)\nGROUP BY 1 ORDER BY 1\n",
+            query="SELECT e.label AS \"Extent\",\n       c.\"Damage type\" AS \"Damage type\",\n       COALESCE(SUM(CASE WHEN d.ext IS NULL THEN 0\n         WHEN c.\"Damage type\" = 'Uprooting'        AND LOWER(d.cause_txt) LIKE '%uproot%' THEN 1\n         WHEN c.\"Damage type\" = 'Trampling'        AND LOWER(d.cause_txt) LIKE '%trampl%' THEN 1\n         WHEN c.\"Damage type\" = 'Feeding / raiding'\n              AND (LOWER(d.cause_txt) LIKE '%feed%' OR LOWER(d.cause_txt) LIKE '%raid%')  THEN 1\n         WHEN c.\"Damage type\" = 'Not recorded'\n              AND (d.cause_txt IS NULL OR d.cause_txt = '')                               THEN 1\n         ELSE 0 END), 0) AS \"Incidents\"\nFROM (\n            SELECT '<1 acre' AS ext, '1. <1 acre' AS label\n  UNION ALL SELECT '1-5 acres', '2. 1-5 acres'\n  UNION ALL SELECT '5-10 acres', '3. 5-10 acres'\n  UNION ALL SELECT '>10 acres', '4. >10 acres'\n  UNION ALL SELECT 'Not recorded', '5. Not recorded'\n) e\nCROSS JOIN (\n            SELECT 'Feeding / raiding' AS \"Damage type\"\n  UNION ALL SELECT 'Not recorded'\n  UNION ALL SELECT 'Trampling'\n  UNION ALL SELECT 'Uprooting'\n) c\nLEFT JOIN (\n  SELECT COALESCE(json_extract(event_details, '$.\"Extent of damage\"'), 'Not recorded') AS ext,\n         NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(\n           CAST(json_extract(event_details, '$.\"Cause of Damage - Wildlife\"') AS TEXT),\n           '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), '') AS cause_txt\n  FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage'\n) d ON d.ext = e.ext\nGROUP BY 1, 2\nORDER BY 1, 2\n",
             columns=None,
             sanitize=True,
             **(params.get("dmg_extent") or {}),
@@ -2756,7 +2996,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
     )
 
     dmg_extent_bar = (
-        task(draw_bar_chart)
+        task(draw_chart)
         .validate()
         .set_task_instance_id("dmg_extent_bar")
         .handle_errors()
@@ -2769,38 +3009,30 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            category="Extent",
-            bar_chart_configs=[
+            x_axis="Extent",
+            figures=[
                 {
-                    "label": "Uprooting",
-                    "column": "Uprooting",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#3e35a3"},
-                },
-                {
-                    "label": "Trampling",
-                    "column": "Trampling",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#3089ff"},
-                },
-                {
-                    "label": "Feeding / raiding",
-                    "column": "Feeding / raiding",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#ff803e"},
-                },
-                {
-                    "label": "Not recorded",
-                    "column": "Not recorded",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#8a8a8a"},
-                },
+                    "metric": {
+                        "display_name": "Incidents",
+                        "aggregator": "sum",
+                        "column": "Incidents",
+                        "decimal_places": 0,
+                    },
+                    "chart_type": "bar",
+                }
             ],
-            layout_kwargs={"barmode": "stack"},
+            time_interval=None,
+            category="Damage type",
+            time_breakdown=None,
+            barmode="stack",
+            palette=["#ff803e", "#8a8a8a", "#3089ff", "#3e35a3"],
+            plot_style=None,
+            layout_style={
+                "showlegend": True,
+                "legend_title": "Damage type",
+                "xaxis": {"title": "Extent of damage"},
+                "yaxis": {"title": "Crop damage incidents"},
+            },
             **(params.get("dmg_extent_bar") or {}),
         )
         .mapvalues(argnames=["dataframe"], argvalues=dmg_extent)
@@ -2840,7 +3072,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            title="Extent of Damage by Damage Type",
+            title="Crop Damage Extent by Damage Type",
             **(params.get("dmg_extent_w") or {}),
         )
         .map(argnames=["view", "data"], argvalues=dmg_extent_html)
@@ -2916,7 +3148,12 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                     "style": {"marker_color": "#7ab800"},
                 },
             ],
-            layout_kwargs={"barmode": "stack"},
+            layout_kwargs={
+                "showlegend": True,
+                "legend_title": "Measure",
+                "xaxis": {"title": "Type of tree crop"},
+                "yaxis": {"title": "Count"},
+            },
             **(params.get("tree_bar") or {}),
         )
         .mapvalues(argnames=["dataframe"], argvalues=tree_by_type)
@@ -2992,7 +3229,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            query="SELECT COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(\n         CAST(json_extract(event_details, '$.\"Type of Property\"') AS TEXT),\n         '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), ''), 'Not recorded') AS \"Property\",\n       SUM(CASE WHEN json_extract(event_details, '$.\"Extent of damage\"') = 'High'   THEN 1 ELSE 0 END) AS \"High\",\n       SUM(CASE WHEN json_extract(event_details, '$.\"Extent of damage\"') = 'Medium' THEN 1 ELSE 0 END) AS \"Medium\",\n       SUM(CASE WHEN json_extract(event_details, '$.\"Extent of damage\"') = 'Low'    THEN 1 ELSE 0 END) AS \"Low\",\n       SUM(CASE WHEN json_extract(event_details, '$.\"Extent of damage\"') IS NULL    THEN 1 ELSE 0 END) AS \"Not recorded\"\nFROM df WHERE is_conflict = 1 AND event_type = 'infrastructure_damage'\nGROUP BY 1 ORDER BY 2 DESC, 3 DESC\n",
+            query="SELECT p.\"Property\" AS \"Property\",\n       x.label AS \"Extent\",\n       COALESCE(SUM(CASE WHEN d.prop IS NULL THEN 0\n                         WHEN d.ext = x.ext THEN 1 ELSE 0 END), 0) AS \"Incidents\"\nFROM (\n  SELECT COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(\n           CAST(json_extract(event_details, '$.\"Type of Property\"') AS TEXT),\n           '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), ''), 'Not recorded') AS \"Property\",\n         COUNT(*) AS total\n  FROM df WHERE is_conflict = 1 AND event_type = 'infrastructure_damage'\n  GROUP BY 1\n) p\nCROSS JOIN (\n            SELECT 'Low' AS ext, '1. Low' AS label\n  UNION ALL SELECT 'Medium', '2. Medium'\n  UNION ALL SELECT 'High', '3. High'\n  UNION ALL SELECT 'Not recorded', '4. Not recorded'\n) x\nLEFT JOIN (\n  SELECT COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(\n           CAST(json_extract(event_details, '$.\"Type of Property\"') AS TEXT),\n           '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), ''), 'Not recorded') AS prop,\n         COALESCE(json_extract(event_details, '$.\"Extent of damage\"'), 'Not recorded') AS ext\n  FROM df WHERE is_conflict = 1 AND event_type = 'infrastructure_damage'\n) d ON d.prop = p.\"Property\"\nGROUP BY 1, 2\nORDER BY p.total DESC, 1, 2\n",
             columns=None,
             sanitize=True,
             **(params.get("infra_by_type") or {}),
@@ -3001,7 +3238,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
     )
 
     infra_bar = (
-        task(draw_bar_chart)
+        task(draw_chart)
         .validate()
         .set_task_instance_id("infra_bar")
         .handle_errors()
@@ -3014,38 +3251,30 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            category="Property",
-            bar_chart_configs=[
+            x_axis="Property",
+            figures=[
                 {
-                    "label": "High",
-                    "column": "High",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#8c1700"},
-                },
-                {
-                    "label": "Medium",
-                    "column": "Medium",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#ff803e"},
-                },
-                {
-                    "label": "Low",
-                    "column": "Low",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#ffc14d"},
-                },
-                {
-                    "label": "Not recorded",
-                    "column": "Not recorded",
-                    "agg_func": "sum",
-                    "show_label": True,
-                    "style": {"marker_color": "#8a8a8a"},
-                },
+                    "metric": {
+                        "display_name": "Incidents",
+                        "aggregator": "sum",
+                        "column": "Incidents",
+                        "decimal_places": 0,
+                    },
+                    "chart_type": "bar",
+                }
             ],
-            layout_kwargs={"barmode": "stack"},
+            time_interval=None,
+            category="Extent",
+            time_breakdown=None,
+            barmode="stack",
+            palette=["#ffc14d", "#ff803e", "#8c1700", "#8a8a8a"],
+            plot_style=None,
+            layout_style={
+                "showlegend": True,
+                "legend_title": "Extent of damage",
+                "xaxis": {"title": "Type of property"},
+                "yaxis": {"title": "Infrastructure damage incidents"},
+            },
             **(params.get("infra_bar") or {}),
         )
         .mapvalues(argnames=["dataframe"], argvalues=infra_by_type)
@@ -3085,7 +3314,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            title="Infrastructure Damage by Property Type",
+            title="Infrastructure Damage by Property Type and Damage Extent",
             **(params.get("infra_bar_w") or {}),
         )
         .map(argnames=["view", "data"], argvalues=infra_bar_html)
@@ -3105,98 +3334,6 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(widgets=infra_bar_w, **(params.get("infra_bar_wm") or {}))
-        .call()
-    )
-
-    dmg_trend_df = (
-        task(apply_sql_query)
-        .validate()
-        .set_task_instance_id("dmg_trend_df")
-        .handle_errors()
-        .with_tracing()
-        .skipif(
-            conditions=[
-                any_is_empty_df,
-                any_dependency_skipped,
-            ],
-            unpack_depth=1,
-        )
-        .partial(
-            df=events_indexed,
-            query="SELECT strftime('%Y-%m', incident_time) AS \"Month\",\n       conflict_type AS \"Damage type\",\n       COUNT(*) AS \"Incidents\"\nFROM df\nWHERE is_conflict = 1 AND event_type IN ('crop_damage', 'infrastructure_damage')\nGROUP BY 1, 2 ORDER BY 1, 2\n",
-            columns=None,
-            sanitize=True,
-            **(params.get("dmg_trend_df") or {}),
-        )
-        .call()
-    )
-
-    dmg_trend = (
-        task(draw_line_chart)
-        .validate()
-        .set_task_instance_id("dmg_trend")
-        .handle_errors()
-        .with_tracing()
-        .skipif(
-            conditions=[
-                any_is_empty_df,
-                any_dependency_skipped,
-            ],
-            unpack_depth=1,
-        )
-        .partial(
-            dataframe=dmg_trend_df,
-            x_column="Month",
-            y_column="Incidents",
-            category_column="Damage type",
-            line_kwargs=None,
-            layout_kwargs=None,
-            smoothing=None,
-            **(params.get("dmg_trend") or {}),
-        )
-        .call()
-    )
-
-    dmg_trend_html = (
-        task(persist_text)
-        .validate()
-        .set_task_instance_id("dmg_trend_html")
-        .handle_errors()
-        .with_tracing()
-        .skipif(
-            conditions=[
-                any_is_empty_df,
-                any_dependency_skipped,
-            ],
-            unpack_depth=1,
-        )
-        .partial(
-            root_path=os.environ["ECOSCOPE_WORKFLOWS_RESULTS"],
-            filename_suffix="damage_trend",
-            text=dmg_trend,
-            **(params.get("dmg_trend_html") or {}),
-        )
-        .call()
-    )
-
-    dmg_trend_w = (
-        task(create_plot_widget_single_view)
-        .validate()
-        .set_task_instance_id("dmg_trend_w")
-        .handle_errors()
-        .with_tracing()
-        .skipif(
-            conditions=[
-                never,
-            ],
-            unpack_depth=1,
-        )
-        .partial(
-            title="Crop and Infrastructure Damage over Time",
-            view=None,
-            data=dmg_trend_html,
-            **(params.get("dmg_trend_w") or {}),
-        )
         .call()
     )
 
@@ -3272,7 +3409,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             title=None,
             north_arrow_style={"placement": "top-left"},
             legend_style={"placement": "bottom-right"},
-            max_zoom=20,
+            max_zoom=15,
             **(params.get("crop_map") or {}),
         )
         .mapvalues(argnames=["geo_layers"], argvalues=crop_layer)
@@ -3404,7 +3541,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             title=None,
             north_arrow_style={"placement": "top-left"},
             legend_style={"placement": "bottom-right"},
-            max_zoom=20,
+            max_zoom=15,
             **(params.get("infra_map") or {}),
         )
         .mapvalues(argnames=["geo_layers"], argvalues=infra_layer)
@@ -3651,7 +3788,12 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                     "style": {"marker_color": "#f23b0e"},
                 },
             ],
-            layout_kwargs=None,
+            layout_kwargs={
+                "showlegend": True,
+                "legend_title": "Retaliation",
+                "xaxis": {"title": "Species responsible"},
+                "yaxis": {"title": "Conflict events"},
+            },
             **(params.get("ret_bar") or {}),
         )
         .mapvalues(argnames=["dataframe"], argvalues=ret_by_species)
@@ -3714,10 +3856,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .call()
     )
 
-    timeline_df = (
-        task(apply_sql_query)
+    inc_events = (
+        task(get_incident_events)
         .validate()
-        .set_task_instance_id("timeline_df")
+        .set_task_instance_id("inc_events")
         .handle_errors()
         .with_tracing()
         .skipif(
@@ -3728,19 +3870,18 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            df=events_indexed,
-            query='SELECT substr(incident_time, 1, 16) AS "Date",\n       conflict_type AS "Conflict type",\n       species_h AS "Species responsible",\n       serial_number AS "Serial",\n       CAST(ROUND(COALESCE(\n         julianday(incident_time) - julianday(LAG(incident_time) OVER (ORDER BY incident_time)), 0\n       )) AS INTEGER) AS "Days since previous"\nFROM df WHERE is_conflict = 1 AND conflict_seq = 1\nORDER BY incident_time\n',
-            columns=None,
-            sanitize=True,
-            **(params.get("timeline_df") or {}),
+            client=er_client_name,
+            time_range=time_range,
+            max_depth=5,
+            **(params.get("inc_events") or {}),
         )
         .call()
     )
 
-    timeline_plot = (
-        task(draw_line_chart)
+    inc_events_tz = (
+        task(convert_values_to_timezone)
         .validate()
-        .set_task_instance_id("timeline_plot")
+        .set_task_instance_id("inc_events_tz")
         .handle_errors()
         .with_tracing()
         .skipif(
@@ -3751,22 +3892,53 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            dataframe=timeline_df,
-            x_column="Date",
-            y_column="Days since previous",
-            category_column="Conflict type",
-            line_kwargs={"mode": "markers+lines"},
-            layout_kwargs=None,
-            smoothing=None,
-            **(params.get("timeline_plot") or {}),
+            df=inc_events,
+            timezone=get_timezone,
+            columns=["time"],
+            auto_detect=False,
+            **(params.get("inc_events_tz") or {}),
         )
         .call()
     )
 
-    timeline_html = (
+    inc_events_colored = (
+        task(assign_event_type_colors)
+        .validate()
+        .set_task_instance_id("inc_events_colored")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(df=inc_events_tz, **(params.get("inc_events_colored") or {}))
+        .call()
+    )
+
+    storyboards = (
+        task(format_incident_storyboards)
+        .validate()
+        .set_task_instance_id("storyboards")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(df=inc_events_colored, **(params.get("storyboards") or {}))
+        .call()
+    )
+
+    storyboards_html = (
         task(persist_text)
         .validate()
-        .set_task_instance_id("timeline_html")
+        .set_task_instance_id("storyboards_html")
         .handle_errors()
         .with_tracing()
         .skipif(
@@ -3777,18 +3949,18 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            text=timeline_plot,
+            text=storyboards,
             root_path=os.environ["ECOSCOPE_WORKFLOWS_RESULTS"],
-            filename_suffix="incident_timeline",
-            **(params.get("timeline_html") or {}),
+            filename_suffix="incident_storyboards",
+            **(params.get("storyboards_html") or {}),
         )
         .call()
     )
 
-    timeline_w = (
+    storyboards_w = (
         task(create_plot_widget_single_view)
         .validate()
-        .set_task_instance_id("timeline_w")
+        .set_task_instance_id("storyboards_w")
         .handle_errors()
         .with_tracing()
         .skipif(
@@ -3798,9 +3970,9 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            title="Incident Timeline",
-            data=timeline_html,
-            **(params.get("timeline_w") or {}),
+            title="Incident Storyboards",
+            data=storyboards_html,
+            **(params.get("storyboards_w") or {}),
         )
         .call()
     )
@@ -3825,15 +3997,26 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                         "item_type": "timerange",
                         "key": "report_date",
                         "value": time_range,
-                        "format": "%B %Y",
+                        "format": "%d %b %Y",
                     },
                     {"item_type": "text", "key": "prepared_by", "value": prepared_by},
                     {"item_type": "table", "key": "period_kpis", "value": period_kpis},
-                    {"item_type": "table", "key": "month_kpis", "value": month_kpis},
                     {
                         "item_type": "image",
                         "key": "ctype_bar",
                         "value": ctype_bar_html,
+                        "width_inches": 6.0,
+                        "screenshot_config": {
+                            "wait_for_timeout": 0,
+                            "max_concurrent_pages": 2,
+                            "device_scale_factor": 1.0,
+                            "timeout": 120000,
+                        },
+                    },
+                    {
+                        "item_type": "image",
+                        "key": "conflict_trend",
+                        "value": trend_html,
                         "width_inches": 6.0,
                         "screenshot_config": {
                             "wait_for_timeout": 0,
@@ -3856,6 +4039,18 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                     },
                     {
                         "item_type": "image",
+                        "key": "event_map",
+                        "value": evt_map_html,
+                        "width_inches": 6.0,
+                        "screenshot_config": {
+                            "wait_for_timeout": 10000,
+                            "max_concurrent_pages": 2,
+                            "device_scale_factor": 1.0,
+                            "timeout": 120000,
+                        },
+                    },
+                    {
+                        "item_type": "image",
                         "key": "species_bar",
                         "value": species_bar_html,
                         "width_inches": 6.0,
@@ -3868,20 +4063,8 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                     },
                     {
                         "item_type": "image",
-                        "key": "timeline_plot",
-                        "value": timeline_html,
-                        "width_inches": 6.0,
-                        "screenshot_config": {
-                            "wait_for_timeout": 0,
-                            "max_concurrent_pages": 2,
-                            "device_scale_factor": 1.0,
-                            "timeout": 120000,
-                        },
-                    },
-                    {
-                        "item_type": "image",
-                        "key": "conflict_trend",
-                        "value": trend_html,
+                        "key": "storyboards",
+                        "value": storyboards_html,
                         "width_inches": 6.0,
                         "screenshot_config": {
                             "wait_for_timeout": 0,
@@ -3994,6 +4177,18 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                     },
                     {
                         "item_type": "image",
+                        "key": "damage_trend",
+                        "value": dmg_trend_html,
+                        "width_inches": 6.0,
+                        "screenshot_config": {
+                            "wait_for_timeout": 0,
+                            "max_concurrent_pages": 2,
+                            "device_scale_factor": 1.0,
+                            "timeout": 120000,
+                        },
+                    },
+                    {
+                        "item_type": "image",
                         "key": "crop_bar",
                         "value": crop_bar_html,
                         "width_inches": 6.0,
@@ -4032,18 +4227,6 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                         "item_type": "image",
                         "key": "infra_bar",
                         "value": infra_bar_html,
-                        "width_inches": 6.0,
-                        "screenshot_config": {
-                            "wait_for_timeout": 0,
-                            "max_concurrent_pages": 2,
-                            "device_scale_factor": 1.0,
-                            "timeout": 120000,
-                        },
-                    },
-                    {
-                        "item_type": "image",
-                        "key": "damage_trend",
-                        "value": dmg_trend_html,
                         "width_inches": 6.0,
                         "screenshot_config": {
                             "wait_for_timeout": 0,
@@ -4228,10 +4411,11 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 hwc_kpi_6_svw,
                 hwc_kpi_7_svw,
                 ctype_bar_wm,
-                inc_map_wm,
-                species_bar_wm,
-                timeline_w,
                 trend_w,
+                inc_map_wm,
+                evt_map_wm,
+                species_bar_wm,
+                storyboards_w,
                 cas_bar_wm,
                 cas_tbl_wm,
                 wl_bar_wm,
@@ -4241,11 +4425,11 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 pred_pred_wm,
                 pred_map_wm,
                 pred_where_wm,
+                dmg_trend_w,
                 crop_bar_wm,
                 dmg_extent_wm,
                 tree_bar_wm,
                 infra_bar_wm,
-                dmg_trend_w,
                 crop_map_wm,
                 infra_map_wm,
                 ret_kpi_0_svw,
