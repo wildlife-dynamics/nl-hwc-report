@@ -1,0 +1,98 @@
+[workspace]
+name = "nl-hwc-report"
+channels = ['https://repo.prefix.dev/ecoscope-workflows/', 'conda-forge']
+platforms = ['linux-64', 'osx-arm64', 'win-64']
+
+[tool.wt]
+# When true, PRs to `main` must come from `staging` or `patch-*` (enforced by
+# .github/workflows/guard-main-prs.yml). Set to false for repos that have not
+# cut a release yet to allow PRs directly to `main`.
+published = false
+
+[dependencies]
+# required for compilation
+wt-compiler = ">=0.8.0, <0.9.0"
+graphviz = "*"
+
+# required for testing
+go-yq = "*"
+
+# WORKAROUND for a wt-compiler 0.8.3 packaging bug. Remove when it is fixed
+# upstream and this repo moves to the fixed version.
+#
+#   wt_compiler/formatting.py formats every generated file with
+#       [sys.executable, "-m", "ruff", "format", "-s", "-"]
+#   so ruff must be importable AS A PYTHON MODULE.
+#
+#   wt-compiler 0.8.3's conda recipe declares `ruff >=0.1.0`, which resolves
+#   to conda-forge's ruff -- a BINARY-ONLY package. Its file manifest is four
+#   entries: bin/ruff and three shell completions. No python module. So the
+#   dependency the compiler declares cannot satisfy the call it makes, and
+#   every compile fails with:
+#       …/bin/python3.15: No module named ruff
+#
+#   `[pypi-dependencies] ruff = "*"` does NOT fix it either: pixi's conda-pypi
+#   name mapping treats the conda package as providing the PyPI name `ruff`
+#   (visible in pixi.lock as `pkg:pypi/ruff?source=compressed-mapping`), so on
+#   linux-64 and osx-arm64 it keeps the binary and never fetches the wheel.
+#   Only win-64 ends up with the real wheel, which is why this reads as a
+#   platform-specific bug.
+#
+#   The shim below puts a one-file `ruff` package on PYTHONPATH whose
+#   __main__.py execs the binary that is already in the env. Version-free,
+#   cross-platform, survives `pixi update`, and applies under `pixi run` in
+#   CI as well as locally.
+[activation.env]
+PYTHONPATH = "$PIXI_PROJECT_ROOT/dev/shims"
+
+[tasks]
+# Second workaround, same cause as the first: pixi does not run conda
+# post-link scripts (`run-post-link-scripts = false` by default -- it prints
+# that warning on every command). graphviz ships its plugins as .dylib/.so
+# files and relies on its post-link script to build the plugin registry:
+#
+#   bin/.graphviz-post-link.sh
+#     if ! compgen -G "${PREFIX}/lib/graphviz"/config* > /dev/null; then
+#         "${PREFIX}/bin"/dot -c || true
+#     fi
+#
+# Skip it and lib/graphviz/config6 never exists, so dot knows no output
+# formats and wt-compiler dies writing graph.png:
+#   Format: "png" not recognized. No formats found.
+#
+# `dot -c` is idempotent and takes milliseconds, so `compile` depends on it
+# rather than asking anyone to remember. This is narrower than pixi's own
+# suggestion (`pixi config set --local run-post-link-scripts insecure`),
+# which would also run the gdk-pixbuf and gtk3 post-link scripts.
+register-graphviz-plugins = "dot -c"
+
+# --pkg-name-prefix and --results-env-var are FLEET-INVARIANT: without them the
+# generated package defaults to upstream's `wt` prefix and `WT_RESULTS`, so you
+# get wt-nl-hwc-report-workflow/ instead of
+# ecoscope-workflows-nl-hwc-report-workflow/. CI's _recompile.yml looks for the
+# ecoscope-workflows- name and fails with "Generated directory does not exist"
+# — a local compile that looks fine and a red CI.
+# First compile, or any time the inner lockfile has to be created from scratch.
+compile-install = { cmd = "wt-compiler compile --spec spec.yaml --pkg-name-prefix=ecoscope-workflows --results-env-var=ECOSCOPE_WORKFLOWS_RESULTS --clobber --no-progress --install", depends-on = ["register-graphviz-plugins"] }
+
+# SYNTAX CHECK ONLY -- do not use this before running anything.
+#
+# A compile without --install or --update DROPS the inner pixi.lock, and that
+# lock is a required artifact, not a convenience:
+#   * Ecoscope Desktop resolves and installs the inner env from it when it
+#     imports the template, so without it the workflow will not load for a
+#     local test at all;
+#   * dev/run-test-cases.sh defaults to `pixi run --locked`;
+#   * .github/workflows/_recompile.yml has a "Validate excluded files exist"
+#     step that fails the build when <WF>/pixi.lock is missing. The lock is
+#     excluded from the DIFF check, so it may churn -- but it must exist.
+#
+# Use this only to answer "does the spec still compile / what does the form
+# look like", with no run afterwards. For anything you intend to RUN, use
+# compile-install; for a PR, use recompile.
+compile = { cmd = "wt-compiler compile --spec spec.yaml --pkg-name-prefix=ecoscope-workflows --results-env-var=ECOSCOPE_WORKFLOWS_RESULTS --clobber --no-progress", depends-on = ["register-graphviz-plugins"] }
+
+# Mirrors .github/workflows/_recompile.yml. Use before opening a PR.
+recompile = { cmd = "wt-compiler compile --spec spec.yaml --pkg-name-prefix=ecoscope-workflows --results-env-var=ECOSCOPE_WORKFLOWS_RESULTS --clobber --update --no-progress", depends-on = ["register-graphviz-plugins"] }
+
+test = { cmd = "bash dev/run-test-cases.sh", depends-on = ["register-graphviz-plugins"] }
