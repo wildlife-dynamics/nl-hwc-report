@@ -15,10 +15,11 @@ Context contract -- keys must match `create_report.context.items` in spec.yaml:
   report_date   timerange -> "{{ report_date }}"
   prepared_by   text      -> "{{ prepared_by }}"
   <table keys>  table -> {key}.col_labels / {key}.tbl_contents
-                monthly tables (merge_groups=True) carry a first "Group"
-                column with the month; period_* tables are ungrouped
+                grouped tables (merge_groups=True) carry a first "Group"
+                column; period_* tables are ungrouped
   <image keys>  grouped image -> list of {title, image}
-  conflict_trend               -> a single image (NOT a list)
+  conflict_trend, damage_trend, storyboards
+                               -> a single image each (NOT a list)
 
 Logos are embedded from resources/images/: the Naibunga Lower logo on the
 cover and on the right of the footer, the Ecoscope logo on the left.
@@ -103,8 +104,21 @@ def about(text: str) -> None:
     para(text, size=9, color=GREY)
 
 
-def caption(label: str, title: str, *, center: bool = False):
-    """'Table 3. Title' / 'Fig. 2. Title' -- bold label, plain title."""
+def caption(label: str, title: str, *, center: bool = False, below: bool = False):
+    """'Table 3. Title' / 'Fig. 2. Title' -- bold label, plain title.
+
+    `below=True` is for figure captions, which sit UNDER their figure.
+
+    THE ANCHORING BUG THE REVIEW FOUND -- "Could you make sure all figure
+    captions are anchored directly underneath their corresponding output?"
+    Every caption used to set keep_with_next, which binds a paragraph to the
+    one that FOLLOWS it. On a table caption that is right: it keeps the caption
+    with its table. On a figure caption it is exactly wrong -- it bound the
+    caption to the next heading and let Word break the page between the figure
+    and its own caption. A figure caption instead needs no keep_with_next of
+    its own, and the figure above it carries keep_with_next so the pair moves
+    together.
+    """
     p = doc.add_paragraph()
     if center:
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -114,9 +128,9 @@ def caption(label: str, title: str, *, center: bool = False):
     t = p.add_run(title)
     t.italic = True
     t.font.size = Pt(9)
-    p.paragraph_format.space_before = Pt(8)
-    p.paragraph_format.space_after = Pt(4)
-    p.paragraph_format.keep_with_next = True
+    p.paragraph_format.space_before = Pt(2 if below else 8)
+    p.paragraph_format.space_after = Pt(12 if below else 4)
+    p.paragraph_format.keep_with_next = not below
     return p
 
 
@@ -172,8 +186,10 @@ def images(key: str, title: str) -> None:
     global _fig_no
     _fig_no += 1
     para(f"{{%p for item in {key} %}}")
-    para("{{ item.image }}", center=True)
-    caption("", title, center=True)
+    img = para("{{ item.image }}", center=True)
+    img.paragraph_format.keep_with_next = True
+    img.paragraph_format.space_after = Pt(0)
+    caption(f"Fig. {_fig_no}.", title, center=True, below=True)
     para("{%p endfor %}")
 
 
@@ -181,14 +197,16 @@ def single_image(key: str, title: str) -> None:
     """An UNGROUPED image item -- built straight from `events_indexed`.
 
     create_docx passes one InlineImage, not a list, so it must NOT be looped
-    over ('InlineImage' object is not iterable). Only the three whole-period
-    charts qualify: the incident timeline, the seasonality series and the
-    damage-over-time line.
+    over ('InlineImage' object is not iterable). Only the whole-period charts
+    qualify: the seasonality series, the damage-over-time series and the
+    incident storyboards.
     """
     global _fig_no
     _fig_no += 1
-    para(f"{{{{ {key} }}}}", center=True)
-    caption("", title, center=True)
+    img = para(f"{{{{ {key} }}}}", center=True)
+    img.paragraph_format.keep_with_next = True
+    img.paragraph_format.space_after = Pt(0)
+    caption(f"Fig. {_fig_no}.", title, center=True, below=True)
 
 
 # ---------------------------------------------------------------- footer
@@ -215,11 +233,17 @@ doc.add_page_break()
 # =========================================================================
 # THE MRD'S REPORT SECTIONS, IN THE MRD'S ORDER.
 #
-# Every figure is a single_image: there is no grouper, so each image key
-# receives one path and a `for item in key` loop would fail with
-# "'InlineImage' object is not iterable". Month appears only where the MRD
-# puts it -- Table 2, the seasonality series and the damage-over-time line --
-# and each of those derives the month in SQL, not from a dashboard grouping.
+# Sections 1-9, renumbered after the review dropped the old section 5
+# (Seasonality) and moved its chart into section 2. Section numbers in this
+# document therefore no longer line up with the MRD's outline from section 5
+# onward: MRD 6 Human injury/death is section 5 here, and so on down to MRD 11
+# Retaliation as section 9.
+#
+# `images()` for anything built from events_grouped, `single_image()` for the
+# three charts built straight from events_indexed. Getting that wrong fails
+# loudly in one direction ("'InlineImage' object is not iterable") and
+# SILENTLY in the other -- `{{ key }}` on a list renders nothing at all, which
+# is how 18 of 22 figures once came out blank with their captions intact.
 #
 # Do not add a section that the MRD does not list. The first review of this
 # report failed on exactly that: extra summary tables and a figure repeated
@@ -230,8 +254,7 @@ doc.add_page_break()
 doc.add_heading("1. Summary", level=1)
 about(
     "Human-wildlife conflict recorded by Naibunga Lower Conservancy in "
-    "EarthRanger over the reporting period. Table 1 gives the totals for the "
-    "whole period and Table 2 the same figures month by month."
+    "EarthRanger over the reporting period."
 )
 about(
     "An incident is a group of related events recorded together, or a single "
@@ -245,47 +268,59 @@ about(
     "caused by wildlife; a wildlife death or injury recorded as conflict; and "
     "a poisoning carried out in retaliation."
 )
+# Review question: "What have you used to calculate total incidents? It looks
+# like total events rather than incidents." The rule is implemented as the MRD
+# defines it; the two numbers coincide at Naibunga today because no events are
+# linked into collections, and a reader deserves to know that rather than
+# assume the count is wrong.
+about(
+    "Where several reports describe one incident they are counted once, as a "
+    "single incident. No reports at Naibunga Lower are currently linked "
+    "together in EarthRanger, so for this period the number of incidents "
+    "equals the number of conflict events recorded."
+)
 table("period_kpis", "Headline figures for the whole period")
-table("month_kpis", "Headline figures by month")
 
 # ---------------------------------------------------------------- 2. conflict type
 doc.add_heading("2. Type of conflict", level=1)
+# Wording supplied verbatim in the review, with the trailing sentence about
+# linked reports kept because it explains the difference between the two maps.
 about(
     "How conflict divides between the different kinds of conflict, and where "
-    "it happened. Each point on the map is one incident, at the incident's "
-    "location -- the first child event's position where several events were "
-    "recorded together."
+    "it happened. Each point is one incident. Where an incident includes "
+    "several linked reports, it is mapped at the location of the earliest one."
 )
-images("ctype_bar", "Conflict incidents by type")
-images("incident_map", "Where conflict happened")
+about(
+    "Figure 3 maps incidents; Figure 4 maps every individual report, so a "
+    "single incident made up of several reports appears once in the first and "
+    "several times in the second. A conflict type keeps the same colour in "
+    "every chart and on every map in this report."
+)
+images("ctype_bar", "Conflict events by type")
+single_image("conflict_trend", "Conflict events per month by type")
+images("incident_map", "Conflict incidents")
+images("event_map", "Conflict events")
 
 # ---------------------------------------------------------------- 3. species
 doc.add_heading("3. Species responsible", level=1)
 about(
     "Which wildlife species caused conflict, broken down by kind of conflict. "
     "'Unknown' means the species was not recorded for that incident. Wildlife "
-    "that were themselves killed or injured are reported in Section 7."
+    "that were themselves killed or injured are reported in Section 6."
 )
 images("species_bar", "Species responsible")
 
-# ---------------------------------------------------------------- 4. timeline
-doc.add_heading("4. Incident timeline", level=1)
+# ---------------------------------------------------------------- 4. storyboard
+doc.add_heading("4. Incident storyboard", level=1)
 about(
-    "Every conflict incident in time order, with the gap since the previous "
-    "one. Clusters of short gaps mark periods of sustained conflict."
+    "How the events making up each incident unfolded, in the order they were "
+    "reported. This shows only incidents whose reports have been linked "
+    "together in EarthRanger; while no reports are linked, it is empty."
 )
-single_image("timeline_plot", "Incident timeline")
+single_image("storyboards", "Incident storyboards")
 
-# ---------------------------------------------------------------- 5. seasonality
-doc.add_heading("5. Seasonality", level=1)
-about(
-    "Conflict incidents per month across the whole reporting period, by "
-    "conflict type, to show when conflict rises and falls through the year."
-)
-single_image("conflict_trend", "Conflict incidents per month by type")
-
-# ---------------------------------------------------------------- 6. people
-doc.add_heading("6. People injured and killed", level=1)
+# ---------------------------------------------------------------- 5. people
+doc.add_heading("5. People injured and killed", level=1)
 about(
     "People injured or killed by wildlife, by the species responsible. Names, "
     "ID numbers and telephone numbers are not included in this report."
@@ -293,8 +328,8 @@ about(
 images("casualties_bar", "Human casualties by species responsible")
 table("cas_table", "Casualty record")
 
-# ---------------------------------------------------------------- 7. wildlife
-doc.add_heading("7. Wildlife killed and injured", level=1)
+# ---------------------------------------------------------------- 6. wildlife
+doc.add_heading("6. Wildlife killed and injured", level=1)
 about(
     "Wildlife killed or injured as a result of conflict, by species and by "
     "cause. Deaths and injuries from natural causes, disease or poaching are "
@@ -304,8 +339,8 @@ images("wildlife_bar", "Wildlife killed and injured by species")
 images("wildlife_cause_bar", "Cause of wildlife death or injury")
 images("wildlife_map", "Wildlife killed or injured in conflict")
 
-# ---------------------------------------------------------------- 8. predation
-doc.add_heading("8. Livestock predation", level=1)
+# ---------------------------------------------------------------- 7. predation
+doc.add_heading("7. Livestock predation", level=1)
 about(
     "Livestock killed or injured by predators: which livestock were lost, "
     "which predators were responsible, and whether animals were inside or "
@@ -317,11 +352,13 @@ images("predator_bar", "Predators responsible")
 images("predation_map", "Predation events, sized by livestock killed")
 images("boma_pie", "Where attacks happened")
 
-# ---------------------------------------------------------------- 9. damage
-doc.add_heading("9. Crop and infrastructure damage", level=1)
+# ---------------------------------------------------------------- 8. damage
+doc.add_heading("8. Crop and infrastructure damage", level=1)
 about(
     "Damage caused by wildlife to crops and to property such as fences, water "
-    "tanks and pipes, by type and by the extent of the damage."
+    "tanks and pipes, by type and by the extent of the damage. Crop damage is "
+    "measured in acres and infrastructure damage on a low-to-high scale, so "
+    "the two are never charted on one axis."
 )
 about(
     "Where a record names more than one crop or property, the combination is "
@@ -329,22 +366,51 @@ about(
     "Damage type and tree-crop figures depend on form fields that are not yet "
     "being filled in, and will read as no records until they are."
 )
-images("crop_bar", "Crop damage incidents by crop")
-images("damage_extent_bar", "Extent of damage by damage type")
-images("tree_bar", "Tree crop damage by tree type")
-images("infra_bar", "Infrastructure damage by property type")
 single_image("damage_trend", "Crop and infrastructure damage over time")
+images("crop_bar", "Crop damage incidents by crop")
+images("damage_extent_bar", "Crop damage extent by damage type")
+images("tree_bar", "Tree crop damage by tree type")
+images("infra_bar", "Infrastructure damage by property type and damage extent")
 images("crop_map", "Crop damage locations")
 images("infra_map", "Infrastructure damage locations")
 
-# ---------------------------------------------------------------- 10. retaliation
-doc.add_heading("10. Retaliation against wildlife", level=1)
+# ---------------------------------------------------------------- 9. retaliation
+doc.add_heading("9. Retaliation against wildlife", level=1)
 about(
     "Conflict incidents where people threatened or carried out retaliation "
-    "against wildlife, in total and by the species involved."
+    "against wildlife, in total and by the species involved. An incident can "
+    "be both threatened and carried out, so the two figures overlap."
 )
 table("ret_kpis", "Retaliation threatened and carried out")
 images("retaliation_bar", "Retaliation by species responsible")
+
+# ---------------------------------------------------------------- notes
+# Review feedback: "Where values are 'Not recorded' (e.g. sections 7 & 8) - is
+# this due to legacy records not being carried over properly? I think we should
+# add a footnote on this."
+#
+# Stated as what can be verified from the data model rather than as a
+# diagnosis: the field is blank at source. It is worth being precise that this
+# is not a migration defect, because the obvious reading of a column full of
+# "Not recorded" is that something was lost on the way in.
+doc.add_heading("About the figures in this report", level=2)
+about(
+    "'Not recorded' means the field was left blank on the report, not that "
+    "something was investigated and came back unknown. It appears for two "
+    "reasons. Reports made before October 2026 were recorded on earlier forms "
+    "that had no equivalent field, so there was nothing to carry across when "
+    "they were migrated to the current event types -- the cause of a wildlife "
+    "death and the boma details on a predation report are both in this "
+    "position. Reports made since are on the current forms, where these fields "
+    "are optional and are sometimes skipped. Neither case means a record was "
+    "lost: the event itself, its date and its location are intact, and it is "
+    "counted in every total."
+)
+about(
+    "Figures are numbered in the order they appear. A figure with no data for "
+    "the period is shown as an empty panel rather than removed, so the "
+    "numbering is stable between one month's report and the next."
+)
 
 
 OUT.parent.mkdir(parents=True, exist_ok=True)

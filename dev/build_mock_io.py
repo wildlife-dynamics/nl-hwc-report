@@ -113,8 +113,14 @@ def add(
     geometry="random",
     collection: str | None = None,
     is_collection: bool = False,
+    note: str | None = None,
 ) -> None:
     """Append one event row.
+
+    `note` becomes an EarthRanger note: a list of note objects, which is how
+    the API returns them and what the spec's `note_txt` reads with
+    `json_extract(notes, '$[0].text')`. Left as an empty list otherwise, which
+    is the common case -- the casualty table then shows a dash.
 
     `collection` names an incident collection this event belongs to. It is
     rendered as EarthRanger renders it: `is_contained_in` is a list of parent
@@ -147,6 +153,7 @@ def add(
             "is_contained_in": [{"id": fid(f"collection/{collection}")}]
             if collection
             else [],
+            "notes": [{"text": note}] if note else [],
         }
     )
 
@@ -218,6 +225,13 @@ add(
         "Telephone number": "0700000000",
     },
     when=t(0, 8, 9),
+    # The only fixture row with a note, so the casualty table's Notes column
+    # shows one populated cell against several dashes. Note text is free text
+    # and is NOT covered by the column whitelist that keeps Name and Telephone
+    # number out of the report -- whatever a ranger types appears verbatim.
+    # This fixture note is deliberately the kind of thing that is safe to
+    # print; a real one need not be.
+    note="Herd moved through the shamba before dawn; casualty taken to the dispensary.",
 )
 add(
     "human_injury",
@@ -560,6 +574,147 @@ events.iloc[0:0].to_parquet(
     OUT_DIR / "events-empty.example-return.parquet", index=False
 )
 
+# --------------------------------------------------------------------------
+# get_incident_events -- section 4's storyboard, a SECOND io task.
+#
+# ecoscope-workflows-ext-wd ships no packaged example return for it, so under
+# --mock-io wt_task.testing fails every case before the DAG starts:
+#   FileNotFoundError: Expected exactly 1 example-return file matching
+#   'get-incident-events.example-return.*' in ecoscope_workflows_ext_wd.tasks
+# These two files are the override, wired up in test-cases.yaml.
+#
+# The schema is NOT guessed. It is the exact frame get_incident_events
+# assembles: the nine renamed incident columns, its `keep` list of member-event
+# columns, and the `icon` it derives from image_url. The empty file is the
+# task's own documented empty return -- it builds
+# GeoDataFrame(columns=["id", "incident", "geometry"]) when no collections
+# exist in the period, which is Naibunga today.
+#
+# The populated file is the SAME Loshaiki raid as the events fixture above,
+# seen the way get_incident_events returns it: one row per (incident, member
+# event), container excluded, children only. So the two fixtures tell one
+# story -- the incident rule collapses those three events to one in Table 1,
+# and the storyboard draws the same three in order.
+# --------------------------------------------------------------------------
+INCIDENT_COLUMNS = [
+    "incident_id",
+    "incident",
+    "incident_serial",
+    "incident_title",
+    "incident_state",
+    "incident_time",
+    "incident_created_at",
+    "incident_updated_at",
+    "incident_priority",
+    "id",
+    "serial_number",
+    "time",
+    "event_type",
+    "event_category",
+    "title",
+    "state",
+    "priority",
+    "priority_label",
+    "reported_by",
+    "notes",
+    "created_at",
+    "updated_at",
+    "event_details",
+    "image_url",
+    "geometry",
+    "icon",
+    "event_type_display",
+    "event_category_display",
+]
+
+
+def _icon(fill: str) -> str:
+    """A minimal per-type icon data URI.
+
+    Deliberately NOT ER's generic icon: `_own_icons` detects that by the
+    '<title>generic' marker and blanks it, so a generic icon would test the
+    no-icon path rather than the icon path.
+    """
+    svg = (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>"
+        f"<circle cx='8' cy='8' r='7' fill='{fill}'/></svg>"
+    )
+    return "data:image/svg+xml;utf8," + svg.replace("#", "%23")
+
+
+# The three children of the Loshaiki collection, in the order they happened.
+_members = [
+    ("crop_damage", "Crop damage", FM, t(0, 14, 6), "#b62879"),
+    ("human_injury", "Human Injury", FM, t(0, 14, 9), "#ed3ea2"),
+    ("hwc_livestock_predation", "HWC Livestock Predation", FM, t(0, 14, 11), "#3e35a3"),
+]
+_inc_rows = []
+for _n, (_slug, _display, _cat, _when, _fill) in enumerate(_members, start=1):
+    _inc_rows.append(
+        {
+            "incident_id": fid(f"collection/{COLL}"),
+            "incident": "#40999 Loshaiki elephant raid",
+            "incident_serial": "40999",
+            "incident_title": "Loshaiki elephant raid",
+            "incident_state": "active",
+            "incident_time": t(0, 14, 6),
+            "incident_created_at": t(0, 14, 6),
+            "incident_updated_at": t(0, 14, 12),
+            "incident_priority": 200,
+            "id": fid(f"incident-member/{_n}"),
+            "serial_number": str(41000 + _n),
+            "time": _when,
+            "event_type": _slug,
+            "event_category": _cat,
+            "title": _display,
+            "state": "resolved",
+            "priority": 200,
+            "priority_label": "Amber",
+            # _reporter() maps the raw dict to a name. Reporter names are a
+            # person's name, so this is the one place a fixture must not copy
+            # the shape of real data too closely -- it is an invented name and
+            # it does not reach any output.
+            "reported_by": "Ranger Fixture",
+            "notes": "",
+            "created_at": _when,
+            "updated_at": _when,
+            "event_details": json.dumps({"Village/Area": "Loshaiki"}),
+            "image_url": "https://example.invalid/icons/fixture.svg",
+            "geometry": COLL_POINT,
+            "icon": _icon(_fill),
+            "event_type_display": _display,
+            "event_category_display": "Field Monitoring",
+        }
+    )
+
+incident_events = gpd.GeoDataFrame(
+    pd.DataFrame(_inc_rows, columns=INCIDENT_COLUMNS), geometry="geometry", crs=4326
+)
+for _col in (
+    "time",
+    "incident_time",
+    "created_at",
+    "updated_at",
+    "incident_created_at",
+    "incident_updated_at",
+):
+    incident_events[_col] = pd.to_datetime(incident_events[_col], utc=True)
+incident_events = incident_events.sort_values(
+    ["incident_time", "time"], ignore_index=True
+)
+incident_events.to_parquet(
+    OUT_DIR / "incident-events.example-return.parquet", index=False
+)
+
+# The empty return, built the way the task builds it rather than by slicing the
+# populated frame: three columns, not twenty-eight.
+gpd.GeoDataFrame(
+    pd.DataFrame(columns=["id", "incident"]).assign(geometry=pd.Series(dtype="object")),
+    geometry="geometry",
+    crs=4326,
+).to_parquet(OUT_DIR / "incident-events-empty.example-return.parquet", index=False)
+
 print(f"events: {len(events)}  no-poisoning: {len(no_pois)}  empty: 0")
 print(events.groupby(["event_category", "event_type"]).size().to_string())
+print(f"incident events: {len(incident_events)} rows in 1 incident  empty: 0")
 print(f"wrote fixtures to {OUT_DIR}")

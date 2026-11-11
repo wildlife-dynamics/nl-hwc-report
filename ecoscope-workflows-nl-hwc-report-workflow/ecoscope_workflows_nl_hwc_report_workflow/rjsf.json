@@ -68,8 +68,9 @@
       "additionalProperties": false,
       "properties": {
         "var": {
-          "title": "",
-          "type": "string"
+          "title": "Prepared by",
+          "type": "string",
+          "description": "Type in the name of the user preparing the analysis - this will appear in the report."
         }
       },
       "required": [
