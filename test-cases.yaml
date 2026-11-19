@@ -79,6 +79,9 @@ base:
       description: "Human-wildlife conflict incidents, losses and response"
     prepared_by:
       var: "Ecoscope"
+    # Grouping is a run-form field, empty by default: one whole-period view.
+    groupers:
+      groupers: []
     er_client_name:
       data_source:
         name: "naibunga"
@@ -115,6 +118,11 @@ no_poisoning:
       description: "No poisoning records in the period"
     prepared_by:
       var: "Ecoscope"
+    # Exercises the optional month grouping: one view per month, figures
+    # repeated per month in the Word report with sequential numbers.
+    groupers:
+      groupers:
+        - temporal_index: '%Y-%m'
     er_client_name:
       data_source:
         name: "naibunga"
@@ -148,6 +156,8 @@ empty:
       description: "Empty period"
     prepared_by:
       var: "Ecoscope"
+    groupers:
+      groupers: []
     er_client_name:
       data_source:
         name: "naibunga"
