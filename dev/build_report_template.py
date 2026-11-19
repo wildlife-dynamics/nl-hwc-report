@@ -18,8 +18,9 @@ Context contract -- keys must match `create_report.context.items` in spec.yaml:
                 grouped tables (merge_groups=True) carry a first "Group"
                 column; period_* tables are ungrouped
   <image keys>  grouped image -> list of {title, image}
-  conflict_trend, damage_trend, storyboards
-                               -> a single image each (NOT a list)
+  storyboards                  -> a single image (NOT a list); every other
+                                  figure is grouped, including the two
+                                  per-month charts
 
 Logos are embedded from resources/images/: the Naibunga Lower logo on the
 cover and on the right of the footer, the Ecoscope logo on the left.
@@ -104,8 +105,22 @@ def about(text: str) -> None:
     para(text, size=9, color=GREY)
 
 
-def caption(label: str, title: str, *, center: bool = False, below: bool = False):
+def caption(
+    kind: str,
+    title: str,
+    *,
+    center: bool = False,
+    below: bool = False,
+    suffix: str = "",
+):
     """'Table 3. Title' / 'Fig. 2. Title' -- bold label, plain title.
+
+    THE NUMBER IS COUNTED AT RENDER TIME by the Jinja namespace `ns` (set once
+    after the cover), not written in here. With the optional month grouping a
+    grouped figure repeats once per month, so a number fixed at build time
+    would repeat too; the counter gives Fig. 1, 2, 3 ... in reading order
+    whatever the grouping. `suffix` is extra Jinja after the title -- the
+    "(Jan 2026)" of a per-month figure.
 
     `below=True` is for figure captions, which sit UNDER their figure.
 
@@ -119,19 +134,51 @@ def caption(label: str, title: str, *, center: bool = False, below: bool = False
     its own, and the figure above it carries keep_with_next so the pair moves
     together.
     """
+    global _table_no, _fig_no
+    counter = "t" if kind == "Table" else "f"
+    if counter == "t":
+        _table_no += 1
+    else:
+        _fig_no += 1
+    label = "Table" if kind == "Table" else "Fig."
     p = doc.add_paragraph()
     if center:
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    lab = p.add_run(label + " ")
+    lab = p.add_run(
+        f"{{% set ns.{counter} = ns.{counter} + 1 %}}{label} {{{{ ns.{counter} }}}}. "
+    )
     lab.bold = True
     lab.font.size = Pt(9)
-    t = p.add_run(title)
+    t = p.add_run(title + suffix)
     t.italic = True
     t.font.size = Pt(9)
     p.paragraph_format.space_before = Pt(2 if below else 8)
     p.paragraph_format.space_after = Pt(12 if below else 4)
     p.paragraph_format.keep_with_next = not below
     return p
+
+
+def month_label(var: str) -> str:
+    """Jinja printing a "2026-01" group value as "Jan 2026", anything else as is.
+
+    Same helper as the management report. The month grouper's values are
+    "%Y-%m"; only the display changes.
+    """
+    m = "'JanFebMarAprMayJunJulAugSepOctNovDec'"
+    return (
+        f"{{% if {var} is string and {var}|length == 7 and {var}[4:5] == '-' %}}"
+        f"{{{{ {m}[({var}[5:7]|int - 1) * 3:({var}[5:7]|int) * 3] }}}} {{{{ {var}[:4] }}}}"
+        f"{{% else %}}{{{{ {var}|e }}}}{{% endif %}}"
+    )
+
+
+# " (Jan 2026)" after a per-month figure's title. The whole-period view's
+# title is the AllGrouper's "True", which is not shown.
+GROUP_SUFFIX = (
+    "{% if item.title and item.title|string != 'True' %} ("
+    + month_label("item.title")
+    + "){% endif %}"
+)
 
 
 def shade(cell, fill: str) -> None:
@@ -145,9 +192,7 @@ def shade(cell, fill: str) -> None:
 
 def table(key: str, title: str) -> None:
     """A captioned, dynamic-column table bound to one table context item."""
-    global _table_no
-    _table_no += 1
-    caption(f"Table {_table_no}.", title)
+    caption("Table", title)
     para(f"{{%p if {key}.tbl_contents %}}")
     t = doc.add_table(rows=4, cols=3)
     t.style = "Table Grid"
@@ -171,7 +216,13 @@ def table(key: str, title: str) -> None:
     para("{%p endif %}")
 
 
-def images(key: str, title: str) -> None:
+def images(
+    key: str,
+    title: str,
+    *,
+    empty: str = "No records for this period.",
+    note: str | None = None,
+) -> None:
     """A GROUPED image item -- anything built from `events_grouped`.
 
     create_docx hands a grouped value to the template as a LIST of
@@ -182,15 +233,34 @@ def images(key: str, title: str) -> None:
     With the AllGrouper there is one iteration, so this produces exactly one
     figure. `item.title` is deliberately NOT in the caption: it would read
     "True" (the all-index value), not a month.
+
+    THE CAPTION IS OUTSIDE THE LOOP. Review 0.2: "Figure numbering skips Fig.
+    18 (goes from 17 to 19 in this section)." Fig. 18 (tree crops) had no data,
+    create_docx dropped its skipped view, the list came through empty, and the
+    loop -- caption included -- rendered nothing, so the number vanished with
+    it. Now the caption always prints and an empty figure prints `empty`
+    above it instead of an image, so the numbering is the same in every
+    report. `key is string` covers the other way a figure can be missing: when
+    the whole item is skipped, create_docx substitutes `missing_text`, a plain
+    string, which must not be looped over character by character.
     """
-    global _fig_no
-    _fig_no += 1
+    para(f"{{%p if {key} is string or not {key} %}}")
+    ph = para(empty, center=True, italic=True, size=9, color=GREY)
+    ph.paragraph_format.keep_with_next = True
+    ph.paragraph_format.space_after = Pt(0)
+    cap = caption("Fig", title, center=True, below=True)
+    para("{%p else %}")
     para(f"{{%p for item in {key} %}}")
     img = para("{{ item.image }}", center=True)
     img.paragraph_format.keep_with_next = True
     img.paragraph_format.space_after = Pt(0)
-    caption(f"Fig. {_fig_no}.", title, center=True, below=True)
+    cap = caption("Fig", title, center=True, below=True, suffix=GROUP_SUFFIX)
     para("{%p endfor %}")
+    para("{%p endif %}")
+    if note:
+        n = para(note, center=True, size=8, color=GREY)
+        n.paragraph_format.space_before = Pt(0)
+        n.paragraph_format.space_after = Pt(10)
 
 
 def single_image(key: str, title: str) -> None:
@@ -201,12 +271,10 @@ def single_image(key: str, title: str) -> None:
     qualify: the seasonality series, the damage-over-time series and the
     incident storyboards.
     """
-    global _fig_no
-    _fig_no += 1
     img = para(f"{{{{ {key} }}}}", center=True)
     img.paragraph_format.keep_with_next = True
     img.paragraph_format.space_after = Pt(0)
-    caption(f"Fig. {_fig_no}.", title, center=True, below=True)
+    caption("Fig", title, center=True, below=True)
 
 
 # ---------------------------------------------------------------- footer
@@ -229,6 +297,7 @@ para("Human-Wildlife Conflict Report", center=True, size=18)
 para("{{ report_date }}", center=True, size=14)
 para("Prepared by: {{ prepared_by|e }}", center=True, size=11)
 doc.add_page_break()
+para("{%p set ns = namespace(t=0, f=0) %}")
 
 # =========================================================================
 # THE MRD'S REPORT SECTIONS, IN THE MRD'S ORDER.
@@ -274,32 +343,41 @@ about(
 # linked into collections, and a reader deserves to know that rather than
 # assume the count is wrong.
 about(
-    "Where several reports describe one incident they are counted once, as a "
-    "single incident. No reports at Naibunga Lower are currently linked "
-    "together in EarthRanger, so for this period the number of incidents "
-    "equals the number of conflict events recorded."
+    "Where several reports are linked together into one incident in "
+    "EarthRanger they are counted once, as a single incident. Conflict reports "
+    "at Naibunga Lower are not yet being linked, so the number of incidents "
+    "currently equals the number of conflict events recorded."
 )
 table("period_kpis", "Headline figures for the whole period")
 
 # ---------------------------------------------------------------- 2. conflict type
 doc.add_heading("2. Type of conflict", level=1)
-# Wording supplied verbatim in the review, with the trailing sentence about
-# linked reports kept because it explains the difference between the two maps.
+# Review 0.2: keep the incident-map wording "for the incident map caption or
+# description" and add "Each point is one conflict report." for the event map.
+# Each sentence now sits under the map it describes, so the section intro only
+# says what the section is.
 about(
-    "How conflict divides between the different kinds of conflict, and where "
-    "it happened. Each point is one incident. Where an incident includes "
-    "several linked reports, it is mapped at the location of the earliest one."
-)
-about(
-    "Figure 3 maps incidents; Figure 4 maps every individual report, so a "
-    "single incident made up of several reports appears once in the first and "
-    "several times in the second. A conflict type keeps the same colour in "
-    "every chart and on every map in this report."
+    "How conflict divides between the different kinds of conflict, when it "
+    "happened, and where. A conflict type keeps the same colour in every chart "
+    "and on every map in this report."
 )
 images("ctype_bar", "Conflict events by type")
-single_image("conflict_trend", "Conflict events per month by type")
-images("incident_map", "Conflict incidents")
-images("event_map", "Conflict events")
+images("conflict_trend", "Conflict events per month by type")
+# Review 0.2: "only render the incident map when the period contains at least
+# one incident collection. Otherwise show a placeholder ('No linked incidents in
+# this period, see Fig. 4') so figure numbering stays consistent." The spec
+# empties the incident map's frame when nothing is linked; the caption below
+# always prints, so Fig. 4 stays Fig. 4.
+images(
+    "incident_map",
+    "Conflict incidents",
+    empty="No linked incidents in this period, see Fig. {{ ns.f + 2 }}.",
+    note=(
+        "Each point is one incident. Where an incident includes several linked "
+        "reports, it is mapped at the location of the earliest one."
+    ),
+)
+images("event_map", "Conflict events", note="Each point is one conflict report.")
 
 # ---------------------------------------------------------------- 3. species
 doc.add_heading("3. Species responsible", level=1)
@@ -314,8 +392,9 @@ images("species_bar", "Species responsible")
 doc.add_heading("4. Incident storyboard", level=1)
 about(
     "How the events making up each incident unfolded, in the order they were "
-    "reported. This shows only incidents whose reports have been linked "
-    "together in EarthRanger; while no reports are linked, it is empty."
+    "reported. This shows every incident whose reports have been linked "
+    "together in EarthRanger in the period -- including any linked incident "
+    "that is not human-wildlife conflict -- and is empty while none are."
 )
 single_image("storyboards", "Incident storyboards")
 
@@ -344,12 +423,16 @@ doc.add_heading("7. Livestock predation", level=1)
 about(
     "Livestock killed or injured by predators: which livestock were lost, "
     "which predators were responsible, and whether animals were inside or "
-    "outside a boma when attacked. The map sizes each point by the number of "
-    "livestock killed."
+    "outside a boma when attacked. One report records one total killed, so a "
+    "report naming several kinds of livestock is shown as 'Several species'."
 )
 images("predation_bar", "Livestock killed and injured by livestock species")
-images("predator_bar", "Predators responsible")
-images("predation_map", "Predation events, sized by livestock killed")
+images("predator_bar", "Predators responsible, by livestock killed")
+images(
+    "predation_map",
+    "Predation events, point size reflects number of livestock killed",
+    note="Colour shows the predator. Sizes: small 0 or 1 killed, medium 2 to 4, large 5 or more.",
+)
 images("boma_pie", "Where attacks happened")
 
 # ---------------------------------------------------------------- 8. damage
@@ -361,18 +444,27 @@ about(
     "the two are never charted on one axis."
 )
 about(
-    "Where a record names more than one crop or property, the combination is "
-    "its own category -- so per-item totals cannot be read by adding rows. "
-    "Damage type and tree-crop figures depend on form fields that are not yet "
-    "being filled in, and will read as no records until they are."
+    "A report naming more than one crop is shown as 'Several crops'. A report "
+    "naming more than one kind of property is shown under that combination, "
+    "so property totals cannot be read by adding rows. Damage type and "
+    "tree-crop figures depend on form fields that are not yet being filled "
+    "in, and will read as no records until they are."
 )
-single_image("damage_trend", "Crop and infrastructure damage over time")
-images("crop_bar", "Crop damage incidents by crop")
+images("damage_trend", "Crop and infrastructure damage over time")
+images("crop_bar", "Crop damage incidents by species responsible and crop")
 images("damage_extent_bar", "Crop damage extent by damage type")
 images("tree_bar", "Tree crop damage by tree type")
 images("infra_bar", "Infrastructure damage by property type and damage extent")
-images("crop_map", "Crop damage locations")
-images("infra_map", "Infrastructure damage locations")
+images(
+    "crop_map",
+    "Crop damage locations",
+    note="Colour shows the extent of damage. Reports within about 100 m of each other are drawn as one larger point.",
+)
+images(
+    "infra_map",
+    "Infrastructure damage locations",
+    note="Colour shows the extent of damage. Reports within about 100 m of each other are drawn as one larger point.",
+)
 
 # ---------------------------------------------------------------- 9. retaliation
 doc.add_heading("9. Retaliation against wildlife", level=1)
@@ -394,16 +486,24 @@ images("retaliation_bar", "Retaliation by species responsible")
 # is not a migration defect, because the obvious reading of a column full of
 # "Not recorded" is that something was lost on the way in.
 doc.add_heading("About the figures in this report", level=2)
+# Review 0.2: "'Not recorded' values: can you please confirm these are accurate
+# and not an issue with the historic data migration? E.g. in Fig. 14, 83% are
+# 'Not recorded'." Checked record by record in EarthRanger on 19 Nov 2026: of
+# the 12 predation reports Jan-Nov 2026, the 10 blanks are all reports made on
+# the old "hwc_livestock" form and copied onto the current one; that form had
+# no boma question at all (nor action taken or retaliation), so there was
+# nothing to copy. Both reports made on the current form answer it. The text
+# below says that generally, because the shares change with the period.
 about(
-    "'Not recorded' means the field was left blank on the report, not that "
-    "something was investigated and came back unknown. It appears for two "
-    "reasons. Reports made before October 2026 were recorded on earlier forms "
-    "that had no equivalent field, so there was nothing to carry across when "
-    "they were migrated to the current event types -- the cause of a wildlife "
-    "death and the boma details on a predation report are both in this "
-    "position. Reports made since are on the current forms, where these fields "
-    "are optional and are sometimes skipped. Neither case means a record was "
-    "lost: the event itself, its date and its location are intact, and it is "
+    "'Not recorded' means the field is blank on the report -- not that "
+    "something was investigated and came back unknown -- and is shown in grey "
+    "in every chart and map. Most blanks are reports first made on the older "
+    "EarthRanger forms and copied onto the current ones in 2026. The older "
+    "forms did not ask every question the current ones do -- the livestock "
+    "form, for example, had no question about the boma, the action taken or "
+    "retaliation -- so for those reports there was no answer to copy. The "
+    "remaining blanks are optional questions left unanswered on the current "
+    "forms. No record was lost: every event, with its date and location, is "
     "counted in every total."
 )
 about(
@@ -415,4 +515,4 @@ about(
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 doc.save(OUT)
-print(f"wrote {OUT}  ({_table_no} tables, {_fig_no} figures)")
+print(f"wrote {OUT}  ({_table_no} table and {_fig_no} figure captions)")
