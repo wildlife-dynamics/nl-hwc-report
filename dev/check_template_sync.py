@@ -83,8 +83,9 @@ def _check_keys() -> int:
     used = set(re.findall(r"\{\{\s*([a-z_]+)", text)) | set(
         re.findall(r"\{%\w*\s*if\s+([a-z_]+)", text)
     )
-    # loop variables are bound inside the template, not supplied by the spec
-    used -= {"item", "col", "row", "loop"}
+    # loop variables are bound inside the template, not supplied by the spec;
+    # `ns` is the figure/table counter, set by the template itself
+    used -= {"item", "col", "row", "loop", "ns"}
     supplied = set(re.findall(r"key: ([a-z_]+)", SPEC.read_text()))
 
     missing = sorted(used - supplied)

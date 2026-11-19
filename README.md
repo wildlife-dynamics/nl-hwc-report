@@ -103,20 +103,30 @@ A two-month run takes a few minutes. Most of that is rendering maps.
 
 ## Reading the dashboard
 
-Ten sections, in the same order as the Word report.
+Nine sections, in the same order as the Word report.
+
+By default the report covers the whole time range in one view. To break it down
+by month, add **Year and Month** under *Report period grouping* on the run form:
+the dashboard gets a month selector and the Word report repeats each grouped
+figure per month, captioned "(Jan 2026)" and numbered in sequence. Table 1, the
+two per-month charts and the incident storyboard always cover the whole range.
 
 | # | Section | What it tells you |
 |---|---|---|
 | 1 | **Summary** | Nine cards: incidents, people injured and killed, livestock injured and killed, wildlife injured and killed, poisonings, retaliation. Your top-line numbers. |
-| 2 | **Type of conflict** | How incidents split between predation, crop damage, infrastructure damage, human injury, human death and wildlife death, and a map of where they happened — one point per incident. |
-| 3 | **Species responsible** | Which animals caused conflict, and which kind. |
-| 4 | **Incident timeline** | Each incident against the gap in days since the one before. A run of points near zero is a burst of conflict; a tall spike is a quiet spell. |
-| 5 | **Seasonality** | Incidents per month, by type. Shows when conflict rises and falls through the year. |
-| 6 | **People injured and killed** | Casualties by the species responsible, and a record of each one with location and action taken. |
-| 7 | **Wildlife killed and injured** | Animals that died or were hurt *because of* conflict, by species and cause. Natural deaths, disease and poaching are excluded. |
-| 8 | **Livestock predation** | What was lost, to which predator, and whether animals were inside or outside a boma. The map sizes each point by the number killed. |
-| 9 | **Crop and infrastructure damage** | What was damaged, by what, how badly, how it changed over time, and where — a separate map for crops and for property. |
-| 10 | **Retaliation** | How often retaliation against wildlife was threatened or carried out, and against which species. |
+| 2 | **Type of conflict** | How conflict splits by type (pie), incidents per month by type with every month in the period labelled, and two maps: one point per incident (drawn only when reports are linked into incidents in EarthRanger) and one point per conflict report. |
+| 3 | **Species responsible** | Which animals caused conflict, stacked by the kind of conflict. |
+| 4 | **Incident storyboard** | How the reports making up each linked incident unfolded. Empty until reports are linked in EarthRanger. |
+| 5 | **People injured and killed** | Casualties by the species responsible, and a record of each one with location (village and coordinates to 5 decimal places), action taken and notes. |
+| 6 | **Wildlife killed and injured** | Animals that died or were hurt *because of* conflict, by species and cause, and a map. Natural deaths, disease and poaching are excluded. |
+| 7 | **Livestock predation** | Livestock killed and injured by type; each predator's kills stacked by livestock type; a map coloured by predator with point size banded by livestock killed (both legends on the map); and whether animals were inside or outside a boma. |
+| 8 | **Crop and infrastructure damage** | Damage per month; crop damage by species responsible stacked by crop; crop extent by damage type; tree crops; property by extent; and a map each for crops and property, coloured by extent, with reports within about 100 m of each other drawn as one larger point. |
+| 9 | **Retaliation** | How often retaliation against wildlife was threatened or carried out, and against which species. |
+
+**Colours are fixed.** A conflict type, a species, a livestock type, an outcome
+(injured / killed) and an extent band each keep one colour across every chart
+and map, and no two kinds of category share a colour. "Not recorded" and
+"Unknown" are always grey.
 
 ## Downloading the results
 
@@ -170,11 +180,16 @@ another, and Human Death lets rangers type the name freely. The workflow maps
 these onto one name, so one elephant is one bar rather than three.
 
 **'Unknown' and 'Not recorded' mean the field was left blank**, not that
-something was investigated and came back unknown.
+something was investigated and came back unknown. Most blanks are reports first
+made on the older EarthRanger forms and copied onto the current ones in 2026:
+the older forms did not ask every question (the livestock form had no boma,
+action or retaliation question), so there was nothing to copy.
 
 **Multi-select fields group as combinations.** Where a ranger ticked both
 *Water Pipes* and *Water Tank*, you get a row reading `Water Pipes, Water Tank`
-rather than one each — so you cannot add rows to get a per-item total.
+rather than one each — so you cannot add rows to get a per-item total. Crop and
+livestock type are the exception: a report naming several reads "Several crops"
+or "Several species", because the form records one total for the report.
 
 ## Privacy
 

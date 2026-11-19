@@ -27,6 +27,22 @@ rjsf-overrides:
     prepared_by.properties.var.description: >-
       Type in the name of the user preparing the analysis - this will appear in
       the report.
+    # OPTIONAL PERIOD GROUPING. Same field as the management report's, but
+    # EMPTY by default: the MRD is whole-period and the first review rejected
+    # figures repeated once per month, so an untouched form gives one view of
+    # the whole range. Choosing Year and Month gives a month selector on the
+    # dashboard and repeats each grouped figure per month in the Word report,
+    # captioned with the month and numbered in sequence. Constrained to
+    # TemporalGrouper: a Value or Spatial grouper would split on a column this
+    # workflow never builds.
+    groupers.properties.groupers.title: Report period grouping
+    groupers.properties.groupers.description: >-
+      Leave empty for one report covering the whole time range (recommended).
+      Add Year, or Year and Month, to break the dashboard and the Word report
+      down by calendar year or month.
+    groupers.properties.groupers.default: []
+    groupers.properties.groupers.items.anyOf:
+    - $ref: '#/$defs/TemporalGrouper'
     base_map_defs.properties.base_maps.default:
     - url: https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}
       opacity: 1
@@ -49,6 +65,26 @@ workflow:
   task: set_time_range
   partial:
     time_format: '%d %b %Y'
+# WHOLE PERIOD BY DEFAULT, MONTHS OR YEARS ON REQUEST.
+#
+# Placed straight after Time Range so the run form asks for it there: the form
+# lists fields in task order.
+#
+# The grouping is a run-form field (see rjsf-overrides), empty by default.
+# Empty -> set_groupers returns the AllGrouper, split_groups yields one group
+# holding the whole frame, and every chain below produces one view: one figure
+# per section in the Word report and no month dropdown, which is what the MRD
+# and the first review asked for.
+#
+# With Year and Month chosen, every grouped widget gets one view per month and
+# the Word report repeats those figures per month, each captioned "(Jan 2026)"
+# and numbered in sequence by the template's render-time counter. The
+# per-month charts (Figs 2 and 15) are grouped too, so a Year grouper gives one
+# Jan-Dec chart per year rather than one chart across every year. Table 1 and
+# the storyboard read events_indexed and stay whole-period either way.
+- name: Report Period Grouping
+  id: groupers
+  task: set_groupers
 - name: Extract Timezone
   id: get_timezone
   task: get_timezone_from_time_range
@@ -71,29 +107,6 @@ workflow:
 - name: Base Maps
   id: base_map_defs
   task: set_base_maps
-# ONE VIEW, WHOLE PERIOD -- deliberately no grouper.
-#
-# The MRD's section list is whole-period throughout: one bar chart, one map,
-# one species chart. The only month-wise outputs it names are the seasonality
-# series, the damage-over-time line and the by-month headline table, and each
-# of those derives the month itself in SQL from incident_time.
-#
-# With a month grouper every grouped widget rendered once per month, so the
-# Word report repeated each figure for each month -- ten pie charts for one pie
-# widget over a ten-month period, which is what the first review flagged.
-#
-# `set_groupers` with no groupers returns the AllGrouper, and `split_groups`
-# then yields a single group holding the whole frame. Every chain downstream is
-# unchanged: one view per widget, one figure per section in the report, and no
-# month dropdown on the dashboard.
-#
-# To restore month views, put the temporal grouper back here and nothing else
-# needs to change -- but the Word report will fan out again.
-- name: Reporting Period
-  id: groupers
-  task: set_groupers
-  partial:
-    groupers: null
 
 - title: Fetch Events
   type: task-group
@@ -451,6 +464,82 @@ workflow:
       df: ${{ workflow.events_indexed.return }}
       groupers: ${{ workflow.groupers.return }}
 
+# Copied verbatim from nl-conservancy-management-report so both reports draw
+# the same outline over the same view.
+#
+# THE CONSERVANCY BOUNDARY, for every map's extent and outline.
+#
+# Review: "Fix the map extent to the conservancy boundary... Include the
+# boundary polygon, scale bar, north arrow and readable legend across all
+# maps." draw_ecomap already adds the scale bar and north arrow; what it lacked
+# was something to zoom to. Every map now carries this outline with zoom: true
+# and its data layers with zoom: false, so the view is the conservancy whatever
+# the points are -- one sighting typed at 0,0 can no longer pull the map out to
+# the whole of Africa.
+#
+# EMBEDDED, NOT FETCHED. The outline is the "Naibunga Lower" feature (type
+# Conservancy) of the instance's "Boundaries" featureset, simplified from 4,325
+# vertices to 101 (Douglas-Peucker, 0.00035 degrees ~ 38 m; area within 0.2%).
+# ext-custom's get_featureset could fetch it live, but it is not io-tagged, so
+# --mock-io cannot mock it and every CI test case would try to reach
+# EarthRanger. If the boundary is redrawn in ER, regenerate this polygon.
+#
+# Built in SQL from a constant, on the events frame only because
+# apply_sql_query returns a GeoDataFrame (geometry parsed from WKT) when its
+# input is one. Skipped on a period with no events, which takes the outline
+# off that run's maps but nothing else.
+- title: Conservancy Boundary
+  type: task-group
+  description: The Naibunga Lower boundary polygon, used as every map's extent.
+  tasks:
+  - name: Naibunga Lower Boundary
+    id: boundary
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_safe.return }}
+      query: |
+        SELECT 'Naibunga Lower' AS "Area",
+               'POLYGON ((36.96877 0.46700, 36.96581 0.47236, 36.92512 0.44412, 36.90968 0.43648, 36.90846 0.43907, ' ||
+               '36.89936 0.43708, 36.89767 0.44192, 36.89881 0.44312, 36.89780 0.44562, 36.89776 0.45083, ' ||
+               '36.89820 0.45203, 36.90109 0.45368, 36.90131 0.45449, 36.89796 0.45684, 36.89472 0.46105, ' ||
+               '36.89490 0.46326, 36.89411 0.46594, 36.89440 0.46756, 36.89335 0.47039, 36.89369 0.47326, ' ||
+               '36.89088 0.47550, 36.89134 0.48060, 36.88856 0.48373, 36.88795 0.48902, 36.88669 0.48989, ' ||
+               '36.88490 0.49251, 36.88384 0.49597, 36.87742 0.49647, 36.87746 0.49781, 36.87930 0.49844, ' ||
+               '36.87984 0.50007, 36.87910 0.50311, 36.87691 0.50490, 36.87642 0.50661, 36.87682 0.50823, ' ||
+               '36.87580 0.50961, 36.87399 0.51078, 36.87110 0.51090, 36.86790 0.51193, 36.86594 0.51384, ' ||
+               '36.86744 0.51726, 36.86675 0.52019, 36.86937 0.52430, 36.86863 0.52565, 36.86908 0.52842, ' ||
+               '36.86862 0.53065, 36.86794 0.53221, 36.86440 0.53577, 36.86388 0.53749, 36.85915 0.54519, ' ||
+               '36.85738 0.55207, 36.85825 0.55324, 36.86325 0.55363, 36.86513 0.55512, 36.86542 0.55672, ' ||
+               '36.86472 0.55891, 36.86524 0.56437, 36.86479 0.56583, 37.04914 0.54651, 37.04873 0.54442, ' ||
+               '37.04997 0.54020, 37.04900 0.53731, 37.05053 0.53505, 37.05089 0.53317, 37.03783 0.52969, ' ||
+               '37.03732 0.52865, 37.03603 0.52896, 37.02973 0.52637, 37.02997 0.52523, 37.02935 0.52458, ' ||
+               '37.02707 0.52342, 37.02240 0.52220, 37.01850 0.51927, 37.01468 0.51377, 37.01287 0.51228, ' ||
+               '37.01121 0.51214, 37.00806 0.51342, 37.00316 0.51374, 37.00085 0.51276, 37.00087 0.50190, ' ||
+               '36.99794 0.50168, 36.99415 0.50037, 36.99208 0.49913, 36.99084 0.49733, 36.98292 0.49714, ' ||
+               '36.98466 0.49367, 36.98879 0.48808, 36.98880 0.48499, 36.98931 0.48450, 36.98897 0.48375, ' ||
+               '36.98627 0.48054, 36.98607 0.47845, 36.98372 0.47596, 36.98225 0.47284, 36.98065 0.47228, ' ||
+               '36.98017 0.47083, 36.97829 0.46996, 36.97752 0.47023, 36.97673 0.46953, 36.97749 0.46560, ' ||
+               '36.96877 0.46700))' AS geometry
+        FROM (SELECT 1)
+      columns: null
+      sanitize: true
+  - name: Boundary Layer
+    id: boundary_layer
+    task: create_polygon_layer
+    partial:
+      geodataframe: ${{ workflow.boundary.return }}
+      layer_style:
+        filled: false
+        stroked: true
+        get_line_color: [26, 26, 26, 255]
+        get_line_width: 2
+        line_width_units: pixels
+        pickable: false
+      legend:
+        labels: [Conservancy boundary]
+        colors: ['#1a1a1a']
+      tooltip_columns: []
+      zoom: true
 - title: Headline Totals
   type: task-group
   description: The eight numbers at the top of the report.
@@ -718,8 +807,9 @@ workflow:
   # conflict type, counts LEFT JOINed on -- so a month with no conflict at all
   # still contributes a zero-height bar and holds its place on the axis.
   #
-  # The month list spans MIN to MAX of incident_time over EVERY event fetched
-  # for the period, not just the conflict ones, which is why a January with
+  # The month list spans MIN to MAX of incident_time over EVERY event in the
+  # view (the whole range, or one year or month when a grouper is chosen), not
+  # just the conflict ones, which is why a January with
   # patrol events but no conflict events still appears. It is a close proxy for
   # the configured range rather than the range itself: apply_sql_query sees
   # only the dataframe, and nothing carries since/until into SQL.
@@ -733,14 +823,19 @@ workflow:
     id: trend_df
     task: apply_sql_query
     partial:
-      df: ${{ workflow.events_indexed.return }}
       query: |
         SELECT mon."Month" AS "Month",
                typ."Conflict type" AS "Conflict type",
                COALESCE(cnt.n, 0) AS "Incidents"
         FROM (
+          SELECT ym, substr('​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​', 1, n)
+                 || CASE substr(ym, 6, 2) WHEN '01' THEN 'Jan' WHEN '02' THEN 'Feb' WHEN '03' THEN 'Mar'
+                   WHEN '04' THEN 'Apr' WHEN '05' THEN 'May' WHEN '06' THEN 'Jun' WHEN '07' THEN 'Jul'
+                   WHEN '08' THEN 'Aug' WHEN '09' THEN 'Sep' WHEN '10' THEN 'Oct' WHEN '11' THEN 'Nov'
+                   ELSE 'Dec' END || ' ' || substr(ym, 1, 4) AS "Month"
+          FROM (
           SELECT substr('000' || CAST((b.lo + s.n) / 12 AS TEXT), -4, 4) || '-' ||
-                 substr('0' || CAST(((b.lo + s.n) % 12) + 1 AS TEXT), -2, 2) AS "Month"
+                 substr('0' || CAST(((b.lo + s.n) % 12) + 1 AS TEXT), -2, 2) AS ym, s.n AS n
           FROM (
             SELECT MIN(CAST(substr(incident_time, 1, 4) AS INTEGER) * 12
                        + CAST(substr(incident_time, 6, 2) AS INTEGER) - 1) AS lo,
@@ -750,6 +845,7 @@ workflow:
           ) b
           JOIN (SELECT ROW_NUMBER() OVER () - 1 AS n FROM df LIMIT 1200) s
             ON b.lo + s.n <= b.hi
+          )
         ) mon
         CROSS JOIN (
                     SELECT 'Crop damage' AS "Conflict type"
@@ -762,13 +858,19 @@ workflow:
           UNION ALL SELECT 'Wildlife injury'
         ) typ
         LEFT JOIN (
-          SELECT strftime('%Y-%m', incident_time) AS mth,
+          SELECT substr(incident_time, 1, 7) AS mth,
                  conflict_type AS ct, COUNT(*) AS n
           FROM df WHERE is_conflict = 1 GROUP BY 1, 2
-        ) cnt ON cnt.mth = mon."Month" AND cnt.ct = typ."Conflict type"
-        ORDER BY 1, 2
+        ) cnt ON cnt.mth = mon.ym AND cnt.ct = typ."Conflict type"
+        -- a view (year or month) with no conflict at all gives no rows, so
+        -- the chart is skipped rather than drawn as a row of empty bars
+        WHERE EXISTS (SELECT 1 FROM df WHERE is_conflict = 1)
+        ORDER BY mon.ym, 2
       columns: null
       sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
   # draw_chart, not draw_time_series_bar_chart or draw_bar_chart.
   #
   # draw_bar_chart cannot stack at all: it builds go.Figure(layout=LayoutStyle),
@@ -777,15 +879,26 @@ workflow:
   # pydantic and every one of them rendered grouped. draw_chart takes barmode
   # as a real argument.
   #
-  # time_interval is left null on purpose: "Month" is already a 'YYYY-MM'
-  # string, so the x axis is categorical and the padded months survive. Asking
-  # draw_chart to bucket by month instead would re-derive the axis from the
-  # data and drop the empty ones again.
+  # time_interval is left null on purpose: "Month" is already a label, so the
+  # x axis is categorical and the padded months survive. Asking draw_chart to
+  # bucket by month instead would re-derive the axis from the data and drop
+  # the empty ones again.
+  #
+  # EVERY MONTH LABELLED -- review 0.2: "Fig. 2: label every month on the
+  # x-axis (currently every second month)." The label used to be '2026-01',
+  # which plotly recognises as a DATE and puts on a date axis with its own
+  # tick spacing -- every second month at this width. "Jan 2026" is not a
+  # date, so the axis stays categorical and every bar gets its label.
+  # draw_chart sorts categorical x values as text, which would put Apr before
+  # Jan, so each label carries n invisible zero-width spaces (U+200B), n = the
+  # month's position: fewer prefixes sort first, text order = month order.
+  # Months are cut from the local timestamp text (substr), not strftime,
+  # which converts to UTC and would move a 1 a.m. incident on the 1st into
+  # the previous month.
   - name: Draw Conflict Trend
     id: trend_chart
     task: draw_chart
     partial:
-      dataframe: ${{ workflow.trend_df.return }}
       x_axis: Month
       figures:
       - metric: {display_name: Incidents, aggregator: sum, column: Incidents, decimal_places: 0}
@@ -802,13 +915,18 @@ workflow:
         legend_title: Conflict type
         xaxis: {title: Month}
         yaxis: {title: Conflict events}
+    mapvalues:
+      argnames: dataframe
+      argvalues: ${{ workflow.trend_df.return }}
   - name: Persist Conflict Trend
     id: trend_html
     task: persist_text
     partial:
-      text: ${{ workflow.trend_chart.return }}
       root_path: ${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}
       filename_suffix: conflict_trend
+    mapvalues:
+      argnames: text
+      argvalues: ${{ workflow.trend_chart.return }}
   - name: Conflict Trend Widget
     id: trend_w
     task: create_plot_widget_single_view
@@ -816,7 +934,14 @@ workflow:
       conditions: *never
     partial:
       title: Conflict Events per Month by Type
-      data: ${{ workflow.trend_html.return }}
+    map:
+      argnames: [view, data]
+      argvalues: ${{ workflow.trend_html.return }}
+  - name: Merge Conflict Trend Views
+    id: trend_wm
+    task: merge_widget_views
+    partial:
+      widgets: ${{ workflow.trend_w.return }}
 
 - title: Species Responsible
   type: task-group
@@ -922,6 +1047,16 @@ workflow:
   # incident's location -- the first child event's geometry, per the
   # report-wide rules. conflict_seq = 1 picks that single row.
   #
+  # DRAWN ONLY WHEN THE PERIOD HAS A LINKED INCIDENT. Review 0.2: "keep both,
+  # but only render the incident map when the period contains at least one
+  # incident collection. Otherwise show a placeholder ... At the moment both
+  # maps are identical because no reports are linked." The EXISTS clause
+  # empties the frame when no event sits in a collection (incident_id falls
+  # back to the event's own id), so the layer and map skip, the dashboard
+  # widget shows its empty state, and the Word report prints "No linked
+  # incidents in this period, see Fig. 4." under the Fig. 3 caption -- the
+  # caption stays, so figure numbers do not move.
+  #
   # incident_geometry is aliased back to `geometry` because apply_sql_query
   # only reconstructs a geometry column under that exact name. Any other name
   # comes back as plain WKT text and the map layer gets nothing to draw.
@@ -935,6 +1070,7 @@ workflow:
                substr(incident_time, 1, 16) AS "Date", serial_number AS "Serial"
         FROM df
         WHERE is_conflict = 1 AND conflict_seq = 1 AND incident_geometry IS NOT NULL
+          AND EXISTS (SELECT 1 FROM df c WHERE c.incident_id <> c.id)
       columns: null
       sanitize: true
     mapvalues:
@@ -976,6 +1112,14 @@ workflow:
     mapvalues:
       argnames: geodataframe
       argvalues: ${{ workflow.inc_cmap.return }}
+  - name: Incident Map Layers
+    id: inc_map_layers
+    task: combine_map_layers
+    partial:
+      static_layers: ${{ workflow.boundary_layer.return }}
+    mapvalues:
+      argnames: grouped_layers
+      argvalues: ${{ workflow.inc_layer.return }}
   - name: Draw Incident Map
     id: inc_map
     task: draw_ecomap
@@ -984,7 +1128,16 @@ workflow:
       static: false
       title: null
       north_arrow_style: {placement: top-left}
-      legend_style: {placement: bottom-right}
+      # SAME MAP FRAME AS THE MANAGEMENT REPORT: legend top-right (bottom-right
+      # sat on the eastern points), a fixed view of the whole conservancy at
+      # zoom 10, and the boundary outline drawn under every map. The base
+      # maps were already the same pair (World Topo at full opacity, World
+      # Imagery at 0.5); what made these look different was the auto-fitted
+      # zoom and the missing outline. See the management report's Draw Patrol
+      # Trajectories Map for how zoom 10 was chosen.
+      legend_style: &map_legend
+        placement: top-right
+        title: Legend
       # Review feedback: "Check zoom. Make sure it's not rendering grey tiles."
       # At 20 the auto-fitted view state zooms past the level the ArcGIS
       # basemaps actually serve tiles for over rural Laikipia, and a map with
@@ -992,9 +1145,15 @@ workflow:
       # that. 15 is inside tile coverage everywhere and still shows
       # individual bomas.
       max_zoom: 15
+      view_state: &conservancy_view
+        longitude: 36.98
+        latitude: 0.53
+        zoom: 10.0
+        pitch: 0
+        bearing: 0
     mapvalues:
       argnames: geo_layers
-      argvalues: ${{ workflow.inc_layer.return }}
+      argvalues: ${{ workflow.inc_map_layers.return }}
   - {name: Persist Incident Map, id: inc_map_html, task: persist_text,
      partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: incident_map},
      mapvalues: {argnames: text, argvalues: "${{ workflow.inc_map.return }}"}}
@@ -1058,6 +1217,14 @@ workflow:
     mapvalues:
       argnames: geodataframe
       argvalues: ${{ workflow.evt_cmap.return }}
+  - name: Event Map Layers
+    id: evt_map_layers
+    task: combine_map_layers
+    partial:
+      static_layers: ${{ workflow.boundary_layer.return }}
+    mapvalues:
+      argnames: grouped_layers
+      argvalues: ${{ workflow.evt_layer.return }}
   - name: Draw Event Map
     id: evt_map
     task: draw_ecomap
@@ -1066,11 +1233,12 @@ workflow:
       static: false
       title: null
       north_arrow_style: {placement: top-left}
-      legend_style: {placement: bottom-right}
+      legend_style: *map_legend
       max_zoom: 15
+      view_state: *conservancy_view
     mapvalues:
       argnames: geo_layers
-      argvalues: ${{ workflow.evt_layer.return }}
+      argvalues: ${{ workflow.evt_map_layers.return }}
   - {name: Persist Event Map, id: evt_map_html, task: persist_text,
      partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: event_map},
      mapvalues: {argnames: text, argvalues: "${{ workflow.evt_map.return }}"}}
@@ -1095,10 +1263,14 @@ workflow:
   # scaffolded so Injured and Killed are both always present and the palette
   # cannot swap them in a period with no deaths.
   #
-  # `outcome_palette` is used by the wildlife and livestock charts too: injured
-  # is amber and killed is dark red in all three, which is the other half of
-  # "make colours consistent across the outputs". Sorted order puts Injured
-  # before Killed.
+  # `outcome_palette` is used by the wildlife and livestock charts and the
+  # wildlife map too: injured is light blue and killed dark blue everywhere.
+  # Review 0.2 found the old amber / dark red were the Infrastructure damage
+  # and Human death hexes reused for an unrelated meaning ("the same hex codes
+  # are reused for unrelated categories, e.g. outcome (killed/injured)"), so
+  # outcome now has a ramp of its own that no other palette uses -- light to
+  # dark because killed is the more severe. Sorted order puts Injured before
+  # Killed.
   - name: Casualties by Species
     id: cas_by_species
     task: apply_sql_query
@@ -1140,7 +1312,7 @@ workflow:
       category: Outcome
       time_breakdown: null
       barmode: stack
-      palette: &outcome_palette ['#ff803e', '#8c1700']
+      palette: &outcome_palette ['#9ecae1', '#08519c']
       plot_style: null
       layout_style:
         showlegend: true
@@ -1175,10 +1347,16 @@ workflow:
                -- the event geometry, which sanitize hands over as WKT
                -- ("POINT (36.9 0.44)"), so they are parsed out of the string
                -- and printed latitude first, the order a reader expects.
-               CASE
+               -- Review 0.2: "Drop the '-' in front of the coordinates. Round
+               -- coordinates to 5 decimal places." The dash was the empty-
+               -- village placeholder glued in front of the coordinates, so a
+               -- record with no village name read "- (0.52, 36.97)". It now
+               -- prints the coordinates alone, at 5 places (about 1 m).
+               COALESCE(CASE
                  WHEN lon_txt IS NULL THEN village
-                 ELSE village || ' (' || lat_txt || ', ' || lon_txt || ')'
-               END AS "Location",
+                 WHEN village IS NULL THEN printf('%.5f, %.5f', CAST(lat_txt AS REAL), CAST(lon_txt AS REAL))
+                 ELSE village || ' (' || printf('%.5f, %.5f', CAST(lat_txt AS REAL), CAST(lon_txt AS REAL)) || ')'
+               END, '-') AS "Location",
                CASE WHEN event_type = 'human_death' THEN 'Killed' ELSE 'Injured' END AS "Outcome",
                species_h AS "Species responsible",
                COALESCE(json_extract(event_details, '$."Age"'), '-') AS "Age",
@@ -1198,8 +1376,8 @@ workflow:
                serial_number AS "Serial"
         FROM (
           SELECT *,
-                 COALESCE(json_extract(event_details, '$."village_area"'),
-                          json_extract(event_details, '$."Village/Area"'), '-') AS village,
+                 NULLIF(TRIM(COALESCE(json_extract(event_details, '$."village_area"'),
+                          json_extract(event_details, '$."Village/Area"'), '')), '') AS village,
                  NULLIF(substr(wkt, 1, instr(wkt, ' ') - 1), '') AS lon_txt,
                  NULLIF(substr(wkt, instr(wkt, ' ') + 1), '') AS lat_txt
           FROM (
@@ -1305,7 +1483,17 @@ workflow:
     task: apply_sql_query
     partial:
       query: |
-        SELECT COALESCE(wl_cause, 'Not recorded') AS "Cause",
+        SELECT CASE
+                 WHEN wl_cause IS NULL OR TRIM(wl_cause) = '' THEN 'Not recorded'
+                 WHEN LOWER(wl_cause) LIKE '%arrow%'   THEN 'Arrow'
+                 WHEN LOWER(wl_cause) LIKE '%euthan%'  THEN 'Euthanised'
+                 WHEN LOWER(wl_cause) LIKE '%fence%'   THEN 'Fence'
+                 WHEN LOWER(wl_cause) LIKE '%gun%'     THEN 'Gunshot'
+                 WHEN LOWER(wl_cause) LIKE '%poison%'  THEN 'Poisoning'
+                 WHEN LOWER(wl_cause) LIKE '%snare%'   THEN 'Snare'
+                 WHEN LOWER(wl_cause) LIKE '%spear%'   THEN 'Spear'
+                 ELSE 'Other'
+               END AS "Cause",
                COUNT(*) AS "Animals"
         FROM df
         WHERE is_conflict = 1 AND event_type IN ('animal_carcass', 'sick_injured_animal')
@@ -1315,6 +1503,31 @@ workflow:
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
+  # A FIXED COLOUR PER CAUSE. Review 0.2: "Show 'Not recorded' as grey across
+  # all outputs." The pie used plotly's default sequence, so Not recorded took
+  # whatever colour its slice position gave it. The query above folds every
+  # label onto the form's fixed vocabulary (anything new lands in Other), so
+  # every row has a key here -- apply_color_map paints an unlisted value
+  # fully transparent, which on a pie is a missing slice.
+  - name: Wildlife Cause Colormap
+    id: wl_cause_cmap
+    task: apply_color_map
+    partial:
+      input_column_name: Cause
+      colormap:
+        Arrow: '#8dd3c7'
+        Euthanised: '#bebada'
+        Fence: '#fb8072'
+        Gunshot: '#80b1d3'
+        Not recorded: &not_recorded '#9e9e9e'
+        Other: '#bc80bd'
+        Poisoning: '#fdb462'
+        Snare: '#b3de69'
+        Spear: '#fccde5'
+      output_column_name: cause_color
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.wl_by_cause.return }}
   # A PIE. Review feedback: "Bar chart - Cause of wildlife death or injury: can
   # we change this to a pie chart please? Flagging that the legend is missing
   # on the bar graph." A single-series bar had nothing to put in a legend; as a
@@ -1325,12 +1538,12 @@ workflow:
     partial:
       value_column: Animals
       label_column: Cause
-      color_column: null
+      color_column: cause_color
       plot_style: {textinfo: value+percent}
       layout_style: {showlegend: true, legend_title: Cause}
     mapvalues:
       argnames: dataframe
-      argvalues: ${{ workflow.wl_by_cause.return }}
+      argvalues: ${{ workflow.wl_cause_cmap.return }}
   - {name: Persist Wildlife Cause Bar, id: wl_cause_html, task: persist_text,
      partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: wildlife_cause_bar},
      mapvalues: {argnames: text, argvalues: "${{ workflow.wl_cause_bar.return }}"}}
@@ -1359,7 +1572,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
   - {name: Wildlife Casualty Colormap, id: wl_cmap, task: apply_color_map,
-     partial: {input_column_name: Outcome, colormap: ['#8c1700', '#ff803e'], output_column_name: wl_color},
+     partial: {input_column_name: Outcome, colormap: &outcome_colors {Injured: '#9ecae1', Killed: '#08519c'}, output_column_name: wl_color},
      mapvalues: {argnames: df, argvalues: "${{ workflow.wl_points.return }}"}}
   - name: Wildlife Casualty Layer
     id: wl_layer
@@ -1380,6 +1593,14 @@ workflow:
     mapvalues:
       argnames: geodataframe
       argvalues: ${{ workflow.wl_cmap.return }}
+  - name: Wildlife Casualty Map Layers
+    id: wl_map_layers
+    task: combine_map_layers
+    partial:
+      static_layers: ${{ workflow.boundary_layer.return }}
+    mapvalues:
+      argnames: grouped_layers
+      argvalues: ${{ workflow.wl_layer.return }}
   - name: Draw Wildlife Casualty Map
     id: wl_map
     task: draw_ecomap
@@ -1388,7 +1609,7 @@ workflow:
       static: false
       title: null
       north_arrow_style: {placement: top-left}
-      legend_style: {placement: bottom-right}
+      legend_style: *map_legend
       # Review feedback: "Check zoom. Make sure it's not rendering grey tiles."
       # At 20 the auto-fitted view state zooms past the level the ArcGIS
       # basemaps actually serve tiles for over rural Laikipia, and a map with
@@ -1396,9 +1617,10 @@ workflow:
       # that. 15 is inside tile coverage everywhere and still shows
       # individual bomas.
       max_zoom: 15
+      view_state: *conservancy_view
     mapvalues:
       argnames: geo_layers
-      argvalues: ${{ workflow.wl_layer.return }}
+      argvalues: ${{ workflow.wl_map_layers.return }}
   - {name: Persist Wildlife Casualty Map, id: wl_map_html, task: persist_text,
      partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: wildlife_casualty_map},
      mapvalues: {argnames: text, argvalues: "${{ workflow.wl_map.return }}"}}
@@ -1422,12 +1644,22 @@ workflow:
                o."Outcome" AS "Outcome",
                CASE WHEN o."Outcome" = 'Killed' THEN a.killed ELSE a.injured END AS "Animals"
         FROM (
-          SELECT COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
-                   CAST(json_extract(event_details, '$."Livestock species"') AS TEXT),
-                   '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Unspecified') AS "Livestock species",
-                 CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$."Total livestock dead"'), 0) AS REAL)), 0) AS INTEGER) AS killed,
-                 CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$."Total livestock injured"'), 0) AS REAL)), 0) AS INTEGER) AS injured
-          FROM df WHERE event_type = 'hwc_livestock_predation'
+          SELECT CASE
+                   WHEN ls IS NULL OR TRIM(ls) IN ('', '[]') THEN 'Not recorded'
+                   WHEN json_valid(ls) = 0 THEN ls
+                   WHEN json_type(ls) <> 'array' THEN json_extract(ls, '$')
+                   WHEN json_array_length(ls) > 1 THEN 'Several species'
+                   WHEN LOWER(json_extract(ls, '$[0]')) LIKE 'other%' THEN 'Other'
+                   ELSE json_extract(ls, '$[0]')
+                 END AS "Livestock species",
+                 CAST(COALESCE(SUM(dead), 0) AS INTEGER) AS killed,
+                 CAST(COALESCE(SUM(injured), 0) AS INTEGER) AS injured
+          FROM (
+            SELECT CAST(json_extract(event_details, '$."Livestock species"') AS TEXT) AS ls,
+                   CAST(COALESCE(json_extract(event_details, '$."Total livestock dead"'), 0) AS REAL) AS dead,
+                   CAST(COALESCE(json_extract(event_details, '$."Total livestock injured"'), 0) AS REAL) AS injured
+            FROM df WHERE event_type = 'hwc_livestock_predation'
+          )
           GROUP BY 1
         ) a
         CROSS JOIN (SELECT 'Injured' AS "Outcome" UNION ALL SELECT 'Killed') o
@@ -1441,7 +1673,7 @@ workflow:
   # injured by livestock species: could we make this stacked please?" The
   # CROSS JOIN turns the two aggregate columns into two rows per species, which
   # is the shape draw_chart's `category` needs, and guarantees both series
-  # exist so `outcome_palette` keeps amber on injured.
+  # exist so `outcome_palette` keeps light blue on injured.
   - name: Draw Livestock Losses Bar
     id: pred_bar
     task: draw_chart
@@ -1473,35 +1705,86 @@ workflow:
   - {name: Merge Livestock Losses Bar Views, id: pred_bar_wm, task: merge_widget_views,
      partial: {widgets: "${{ workflow.pred_bar_w.return }}"}}
 
+  # FIG. 12 -- PREDATORS, EACH BAR STACKED BY THE LIVESTOCK KILLED.
+  #
+  # Review 0.2: "change to predators responsible by livestock type, so each
+  # predator's bar is stacked by the livestock killed. Make sure the legend
+  # reflects this (colours = livestock species)."
+  #
+  # Livestock species is a multi-select on the form, but the form records ONE
+  # total killed per report, so a report naming goats and sheep cannot be
+  # split between them. Such a report is stacked as "Several species" rather
+  # than guessed at. "Other (specify in notes)" is shortened to "Other".
+  #
+  # The livestock list is FIXED and always present, zeros included, because
+  # draw_chart deals its palette out over the series in sorted order: with a
+  # fixed set of eight, goat is the same colour in every period. Sorted, the
+  # series are Camel, Cattle, Donkey, Goat, Not recorded, Other, Several
+  # species, Sheep -- `livestock_palette` below is in that order, with Not
+  # recorded grey like everywhere else.
   - name: Predators Responsible
     id: pred_predators
     task: apply_sql_query
     partial:
       query: |
-        SELECT species_h AS "Predator",
-               COUNT(*) AS "Attacks",
-               CAST(COALESCE(SUM(CAST(COALESCE(json_extract(event_details, '$."Total livestock dead"'), 0) AS REAL)), 0) AS INTEGER) AS "Livestock killed"
-        FROM df WHERE event_type = 'hwc_livestock_predation'
-        GROUP BY 1 ORDER BY 3 DESC, 2 DESC
+        SELECT p.pred AS "Predator", l.ls AS "Livestock species",
+               CAST(COALESCE(SUM(CASE WHEN d.ls = l.ls THEN d.dead ELSE 0 END), 0) AS INTEGER) AS "Livestock killed"
+        FROM (
+          SELECT species_h AS pred,
+                 SUM(CAST(COALESCE(json_extract(event_details, '$."Total livestock dead"'), 0) AS REAL)) AS total,
+                 COUNT(*) AS attacks
+          FROM df WHERE event_type = 'hwc_livestock_predation' GROUP BY 1
+          HAVING SUM(CAST(COALESCE(json_extract(event_details, '$."Total livestock dead"'), 0) AS REAL)) > 0
+        ) p
+        CROSS JOIN (
+                    SELECT 'Camel' AS ls UNION ALL SELECT 'Cattle' UNION ALL SELECT 'Donkey'
+          UNION ALL SELECT 'Goat' UNION ALL SELECT 'Not recorded' UNION ALL SELECT 'Other'
+          UNION ALL SELECT 'Several species' UNION ALL SELECT 'Sheep'
+        ) l
+        LEFT JOIN (
+          SELECT species_h AS pred,
+                 CASE
+                   WHEN lsr IS NULL OR TRIM(lsr) IN ('', '[]') THEN 'Not recorded'
+                   WHEN json_valid(lsr) = 0 THEN lsr
+                   WHEN json_type(lsr) <> 'array' THEN json_extract(lsr, '$')
+                   WHEN json_array_length(lsr) > 1 THEN 'Several species'
+                   WHEN LOWER(json_extract(lsr, '$[0]')) LIKE 'other%' THEN 'Other'
+                   ELSE json_extract(lsr, '$[0]')
+                 END AS ls,
+                 dead
+          FROM (
+            SELECT species_h,
+                   CAST(json_extract(event_details, '$."Livestock species"') AS TEXT) AS lsr,
+                   CAST(COALESCE(json_extract(event_details, '$."Total livestock dead"'), 0) AS REAL) AS dead
+            FROM df WHERE event_type = 'hwc_livestock_predation'
+          )
+        ) d ON d.pred = p.pred
+        GROUP BY p.pred, l.ls
+        ORDER BY MAX(p.total) DESC, MAX(p.attacks) DESC, 1, 2
       columns: null
       sanitize: true
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
-  # Review feedback, section 8: "Bar graph - Predators responsible: legend
-  # missing." Plotly hides the legend on a single-trace figure unless asked, so
-  # showlegend is set explicitly, and the axes are now labelled like every
-  # other chart in the report.
   - name: Draw Predators Bar
     id: pred_pred_bar
-    task: draw_bar_chart
+    task: draw_chart
     partial:
-      category: Predator
-      bar_chart_configs:
-      - {label: Livestock killed, column: Livestock killed, agg_func: sum, show_label: true, style: {marker_color: '#3e35a3'}}
-      layout_kwargs:
+      x_axis: Predator
+      figures:
+      - metric: {display_name: Livestock killed, aggregator: sum, column: Livestock killed, decimal_places: 0}
+        chart_type: bar
+      time_interval: null
+      category: Livestock species
+      time_breakdown: null
+      barmode: stack
+      # Camel, Cattle, Donkey, Goat, Not recorded, Other, Several species, Sheep
+      palette: &livestock_palette ['#e6ab02', '#1b7837', '#7f3b08', '#17becf', '#9e9e9e',
+                                   '#c2a5cf', '#bf812d', '#5e3c99']
+      plot_style: null
+      layout_style:
         showlegend: true
-        legend_title: Measure
+        legend_title: Livestock killed
         xaxis: {title: Predator species}
         yaxis: {title: Livestock killed}
     mapvalues:
@@ -1511,7 +1794,7 @@ workflow:
      partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: predators_bar},
      mapvalues: {argnames: text, argvalues: "${{ workflow.pred_pred_bar.return }}"}}
   - {name: Predators Bar Widget, id: pred_pred_w, task: create_plot_widget_single_view,
-     skipif: {conditions: *never}, partial: {title: Livestock Killed by Predator Species},
+     skipif: {conditions: *never}, partial: {title: Livestock Killed by Predator and Livestock Type},
      map: {argnames: [view, data], argvalues: "${{ workflow.pred_pred_html.return }}"}}
   - {name: Merge Predators Bar Views, id: pred_pred_wm, task: merge_widget_views,
      partial: {widgets: "${{ workflow.pred_pred_w.return }}"}}
@@ -1523,21 +1806,36 @@ workflow:
     task: apply_sql_query
     partial:
       query: |
-        SELECT COALESCE(json_extract(event_details, '$."Animals found inside or outside boma"'),
-                        json_extract(event_details, '$."Animals found"'), 'Not recorded') AS "Attack location",
+        SELECT CASE
+                 WHEN loc IS NULL OR TRIM(loc) = '' THEN 'Not recorded'
+                 WHEN LOWER(loc) LIKE 'inside%'  THEN 'Inside boma'
+                 WHEN LOWER(loc) LIKE 'outside%' THEN 'Outside boma'
+                 ELSE 'Not applicable'
+               END AS "Attack location",
                COUNT(*) AS "Attacks"
-        FROM df WHERE event_type = 'hwc_livestock_predation'
+        FROM (
+          SELECT COALESCE(json_extract(event_details, '$."Animals found inside or outside boma"'),
+                          json_extract(event_details, '$."Animals found"')) AS loc
+          FROM df WHERE event_type = 'hwc_livestock_predation'
+        )
         GROUP BY 1 ORDER BY 2 DESC
       columns: null
       sanitize: true
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
+  # Fixed colours, Not recorded grey. The form's three answers are Inside boma,
+  # Outside boma and N/A; the query folds them onto these four keys.
+  - {name: Attack Location Colormap, id: pred_where_cmap, task: apply_color_map,
+     partial: {input_column_name: Attack location, output_column_name: where_color,
+               colormap: {Inside boma: '#4575b4', Outside boma: '#d73027',
+                          Not applicable: '#fee090', Not recorded: *not_recorded}},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.pred_where.return }}"}}
   - {name: Draw Attack Location Pie, id: pred_where_pie, task: draw_pie_chart,
-     partial: {value_column: Attacks, label_column: Attack location, color_column: null,
+     partial: {value_column: Attacks, label_column: Attack location, color_column: where_color,
                plot_style: {textinfo: value+percent},
                layout_style: {showlegend: true, legend_title: Attack location}},
-     mapvalues: {argnames: dataframe, argvalues: "${{ workflow.pred_where.return }}"}}
+     mapvalues: {argnames: dataframe, argvalues: "${{ workflow.pred_where_cmap.return }}"}}
   - {name: Persist Attack Location Pie, id: pred_where_html, task: persist_text,
      partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: attack_location_pie},
      mapvalues: {argnames: text, argvalues: "${{ workflow.pred_where_pie.return }}"}}
@@ -1547,52 +1845,77 @@ workflow:
   - {name: Merge Attack Location Pie Views, id: pred_where_wm, task: merge_widget_views,
      partial: {widgets: "${{ workflow.pred_where_w.return }}"}}
 
-  # Proportional symbols: radius scales with livestock killed, so one bad
-  # night reads differently from one goat.
+  # FIG. 13 -- PREDATION EVENTS. Colour = predator, point size = livestock
+  # killed, and since review 0.2 a legend for each.
+  #
+  # Review 0.2: "Is there any way we could add a size legend for livestock
+  # killed?" draw_ecomap's legend draws colour swatches only -- it has no
+  # notion of size -- so the sizes are made SAY-ABLE instead: three fixed bands
+  # (0-1, 2-4, 5 or more killed) at three fixed radii, which a text legend can
+  # name exactly. The size legend is a second, titled legend box carried by an
+  # invisible layer (`pred_size_key` below): one real predation point drawn at
+  # zero opacity, whose only job is to put "Livestock killed" and its three
+  # bands on the map. A continuous radius looked more precise but could not be
+  # read back by anyone, which is what the review was asking for.
+  #
+  # Colour: review 0.2 -- "Use a fixed species palette everywhere species
+  # appear." The predator colours used to be the conflict-type hexes dealt out
+  # by position, so Lion could be Livestock-predation indigo on this map and
+  # something else next month. `species_colors` is a dict keyed by species and
+  # shares no hex with any other palette in the report; species outside it are
+  # drawn as "Other species", and "Unknown" is grey like every not-recorded
+  # value. The SQL folds names onto those keys, because apply_color_map paints
+  # an unlisted value fully transparent.
   - name: Predation Points
     id: pred_points
     task: apply_sql_query
     partial:
       query: |
-        SELECT geometry,
-               species_h AS "Predator",
-               CAST(COALESCE(CAST(json_extract(event_details, '$."Total livestock dead"') AS REAL), 0) AS INTEGER) AS "Livestock killed",
-               COALESCE(json_extract(event_details, '$."Animals found inside or outside boma"'),
-                        json_extract(event_details, '$."Animals found"'), '-') AS "Attack location",
-               substr(report_time, 1, 16) AS "Date"
-        FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL
+        SELECT geometry, "Predator", "Livestock killed",
+               CASE WHEN "Livestock killed" >= 5 THEN 17 WHEN "Livestock killed" >= 2 THEN 11 ELSE 6 END AS size_px,
+               "Attack location", "Date"
+        FROM (
+          SELECT geometry,
+                 CASE
+                   WHEN species_h IS NULL OR species_h = 'Unknown' THEN 'Unknown'
+                   WHEN LOWER(species_h) LIKE '%lion%'           THEN 'Lion'
+                   WHEN LOWER(species_h) LIKE '%leopard%'        THEN 'Leopard'
+                   WHEN LOWER(species_h) LIKE '%cheetah%'        THEN 'Cheetah'
+                   WHEN LOWER(species_h) LIKE '%spotted hyena%'  THEN 'Spotted Hyena'
+                   WHEN LOWER(species_h) LIKE '%striped hyena%'  THEN 'Striped Hyena'
+                   WHEN LOWER(species_h) LIKE '%wild dog%'       THEN 'Wild Dog'
+                   WHEN LOWER(species_h) LIKE '%jackal%'         THEN 'Jackal'
+                   WHEN LOWER(species_h) LIKE '%baboon%'         THEN 'Olive Baboon'
+                   WHEN LOWER(species_h) LIKE '%elephant%'       THEN 'Elephant'
+                   WHEN LOWER(species_h) LIKE '%buffalo%'        THEN 'Buffalo'
+                   ELSE 'Other species'
+                 END AS "Predator",
+                 CAST(COALESCE(CAST(json_extract(event_details, '$."Total livestock dead"') AS REAL), 0) AS INTEGER) AS "Livestock killed",
+                 COALESCE(json_extract(event_details, '$."Animals found inside or outside boma"'),
+                          json_extract(event_details, '$."Animals found"'), 'Not recorded') AS "Attack location",
+                 substr(report_time, 1, 16) AS "Date"
+          FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL
+        )
       columns: null
       sanitize: true
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
   - {name: Predation Colormap, id: pred_cmap, task: apply_color_map,
-     partial: {input_column_name: Predator,
-               colormap: ['#3e35a3', '#b62879', '#ff803e', '#ed3ea2', '#3089ff', '#8c1700', '#a100cb', '#004e26', '#002960', '#f23b0e'],
-               output_column_name: pred_color},
+     partial: {input_column_name: Predator, output_column_name: pred_color,
+               colormap: &species_colors {
+                 Buffalo: '#000000', Cheetah: '#ffd92f', Elephant: '#6a3d9a',
+                 Jackal: '#b15928', Leopard: '#1f78b4', Lion: '#ff7f00',
+                 Olive Baboon: '#fb9a99', Other species: '#cab2d6',
+                 Spotted Hyena: '#e31a1c', Striped Hyena: '#33a02c',
+                 Unknown: '#9e9e9e', Wild Dog: '#b2df8a'}},
      mapvalues: {argnames: df, argvalues: "${{ workflow.pred_points.return }}"}}
 
-  # ON THE get_radius SERIALIZER WARNING, which every mock run prints:
-  #
-  #     PydanticSerializationUnexpectedValue(Expected `float` …
-  #       field_name='get_radius', input_value=array([0, 2, 5, 4, 1, 4, 6, 3]))
-  #
-  # It is cosmetic. `get_radius` is declared `FloatAccessor = str | float |
-  # list[float]`; it receives the resolved column as an ndarray, which matches
-  # none of those, so pydantic grumbles while deck.gl consumes it fine -- the
-  # maps render.
-  #
-  # The leading 0 is an attack where livestock were injured but none killed.
-  # It does NOT vanish: `radius_min_pixels: 5` below clamps the drawn radius,
-  # so a zero-loss attack renders at the minimum dot size, which is the right
-  # picture -- smallest dot for smallest loss.
-  #
-  # `shift_radius_values` was tried here and removed. Its docstring claims it
-  # "shifts the given radius column so that values are >= 1", but the code
-  # only lifts when `series.min() < 0` or when the series has NaNs. With
-  # min == 0 and no NaNs it returns the column untouched, so it was a no-op
-  # node that implied a fix it was not making. Worth reporting upstream: the
-  # docstring and the behaviour disagree.
+  # The radius is the band's pixel size, read straight off size_px:
+  # radius_units pixels at radius_scale 1 draws exactly 6 / 11 / 17 px, which
+  # is what the size legend promises. (pydantic still prints its cosmetic
+  # get_radius serializer warning -- the column arrives as an ndarray, which
+  # deck.gl consumes fine.)
   - name: Predation Layer
     id: pred_layer
     task: create_point_layer
@@ -1600,20 +1923,60 @@ workflow:
       conditions: *geo
     partial:
       layer_style:
-        get_radius: Livestock killed
-        radius_scale: 3.0
-        radius_min_pixels: 5
-        radius_max_pixels: 40
+        get_radius: size_px
+        radius_units: pixels
+        radius_scale: 1.0
         fill_color_column: pred_color
         get_line_color: '#ffffff'
         stroked: true
         get_line_width: 1
-        opacity: 0.8
-      legend: {label_column: Predator, color_column: pred_color}
+        opacity: 0.85
+      legend: {label_column: Predator, color_column: pred_color, title: Predator}
       tooltip_columns: [Predator, Livestock killed, Attack location, Date]
     mapvalues:
       argnames: geodataframe
       argvalues: ${{ workflow.pred_cmap.return }}
+  # The size key. Ungrouped -- one invisible point taken from the whole period
+  # -- so it joins every view through combine_map_layers' static slot.
+  - name: Predation Size Key Point
+    id: pred_size_key_pt
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT geometry FROM df
+        WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL
+        LIMIT 1
+      columns: null
+      sanitize: true
+  - name: Predation Size Key
+    id: pred_size_key
+    task: create_point_layer
+    skipif:
+      conditions: *geo
+    partial:
+      geodataframe: ${{ workflow.pred_size_key_pt.return }}
+      layer_style:
+        get_radius: 0.0
+        radius_units: pixels
+        get_fill_color: '#525252'
+        stroked: false
+        opacity: 0.0
+      legend:
+        title: Livestock killed (point size)
+        labels: ['Small point: 0 or 1', 'Medium point: 2 to 4', 'Large point: 5 or more']
+        colors: ['#525252', '#525252', '#525252']
+      tooltip_columns: []
+  - name: Predation Map Layers
+    id: pred_map_layers
+    task: combine_map_layers
+    partial:
+      static_layers:
+      - ${{ workflow.boundary_layer.return }}
+      - ${{ workflow.pred_size_key.return }}
+    mapvalues:
+      argnames: grouped_layers
+      argvalues: ${{ workflow.pred_layer.return }}
   - name: Draw Predation Map
     id: pred_map
     task: draw_ecomap
@@ -1622,7 +1985,7 @@ workflow:
       static: false
       title: null
       north_arrow_style: {placement: top-left}
-      legend_style: {placement: bottom-right}
+      legend_style: *map_legend
       # Review feedback: "Check zoom. Make sure it's not rendering grey tiles."
       # At 20 the auto-fitted view state zooms past the level the ArcGIS
       # basemaps actually serve tiles for over rural Laikipia, and a map with
@@ -1630,9 +1993,10 @@ workflow:
       # that. 15 is inside tile coverage everywhere and still shows
       # individual bomas.
       max_zoom: 15
+      view_state: *conservancy_view
     mapvalues:
       argnames: geo_layers
-      argvalues: ${{ workflow.pred_layer.return }}
+      argvalues: ${{ workflow.pred_map_layers.return }}
   - {name: Persist Predation Map, id: pred_map_html, task: persist_text,
      partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: predation_map},
      mapvalues: {argnames: text, argvalues: "${{ workflow.pred_map.return }}"}}
@@ -1666,20 +2030,25 @@ workflow:
   #
   # Same month scaffold as the seasonality chart in section 2, for the same
   # reason: a month with no damage has to keep its slot on the axis rather than
-  # vanish. UNGROUPED -- it reads events_indexed and spans the whole period, so
-  # it feeds the dashboard unmerged.
+  # vanish. GROUPED like every other figure, so with a Year grouper each year
+  # gets its own chart; with no grouper there is one, spanning the whole range.
   - name: Damage Trend Frame
     id: dmg_trend_df
     task: apply_sql_query
     partial:
-      df: ${{ workflow.events_indexed.return }}
       query: |
         SELECT mon."Month" AS "Month",
                typ."Damage type" AS "Damage type",
                COALESCE(cnt.n, 0) AS "Events"
         FROM (
+          SELECT ym, substr('​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​', 1, n)
+                 || CASE substr(ym, 6, 2) WHEN '01' THEN 'Jan' WHEN '02' THEN 'Feb' WHEN '03' THEN 'Mar'
+                   WHEN '04' THEN 'Apr' WHEN '05' THEN 'May' WHEN '06' THEN 'Jun' WHEN '07' THEN 'Jul'
+                   WHEN '08' THEN 'Aug' WHEN '09' THEN 'Sep' WHEN '10' THEN 'Oct' WHEN '11' THEN 'Nov'
+                   ELSE 'Dec' END || ' ' || substr(ym, 1, 4) AS "Month"
+          FROM (
           SELECT substr('000' || CAST((b.lo + s.n) / 12 AS TEXT), -4, 4) || '-' ||
-                 substr('0' || CAST(((b.lo + s.n) % 12) + 1 AS TEXT), -2, 2) AS "Month"
+                 substr('0' || CAST(((b.lo + s.n) % 12) + 1 AS TEXT), -2, 2) AS ym, s.n AS n
           FROM (
             SELECT MIN(CAST(substr(incident_time, 1, 4) AS INTEGER) * 12
                        + CAST(substr(incident_time, 6, 2) AS INTEGER) - 1) AS lo,
@@ -1689,26 +2058,31 @@ workflow:
           ) b
           JOIN (SELECT ROW_NUMBER() OVER () - 1 AS n FROM df LIMIT 1200) s
             ON b.lo + s.n <= b.hi
+          )
         ) mon
         CROSS JOIN (
                     SELECT 'Crop damage' AS "Damage type"
           UNION ALL SELECT 'Infrastructure damage'
         ) typ
         LEFT JOIN (
-          SELECT strftime('%Y-%m', incident_time) AS mth,
+          SELECT substr(incident_time, 1, 7) AS mth,
                  conflict_type AS ct, COUNT(*) AS n
           FROM df
           WHERE is_conflict = 1 AND event_type IN ('crop_damage', 'infrastructure_damage')
           GROUP BY 1, 2
-        ) cnt ON cnt.mth = mon."Month" AND cnt.ct = typ."Damage type"
-        ORDER BY 1, 2
+        ) cnt ON cnt.mth = mon.ym AND cnt.ct = typ."Damage type"
+        WHERE EXISTS (SELECT 1 FROM df WHERE is_conflict = 1
+                      AND event_type IN ('crop_damage', 'infrastructure_damage'))
+        ORDER BY mon.ym, 2
       columns: null
       sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.events_grouped.return }}
   - name: Draw Damage Trend
     id: dmg_trend
     task: draw_chart
     partial:
-      dataframe: ${{ workflow.dmg_trend_df.return }}
       x_axis: Month
       figures:
       - metric: {display_name: Events, aggregator: sum, column: Events, decimal_places: 0}
@@ -1726,9 +2100,12 @@ workflow:
         legend_title: Damage type
         xaxis: {title: Month}
         yaxis: {title: Damage events}
+    mapvalues:
+      argnames: dataframe
+      argvalues: ${{ workflow.dmg_trend_df.return }}
   - {name: Persist Damage Trend, id: dmg_trend_html, task: persist_text,
-     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: damage_trend,
-               text: "${{ workflow.dmg_trend.return }}"}}
+     partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: damage_trend},
+     mapvalues: {argnames: text, argvalues: "${{ workflow.dmg_trend.return }}"}}
   # skipif *never, like every other widget here, and it is NOT optional.
   #
   # Without it this inherits task-instance-defaults' [any_is_empty_df,
@@ -1740,44 +2117,98 @@ workflow:
   # placeholder is.
   - {name: Damage Trend Widget, id: dmg_trend_w, task: create_plot_widget_single_view,
      skipif: {conditions: *never},
-     partial: {title: Crop and Infrastructure Damage over Time, view: null,
-               data: "${{ workflow.dmg_trend_html.return }}"}}
+     partial: {title: Crop and Infrastructure Damage over Time},
+     map: {argnames: [view, data], argvalues: "${{ workflow.dmg_trend_html.return }}"}}
+  - {name: Merge Damage Trend Views, id: dmg_trend_wm, task: merge_widget_views,
+     partial: {widgets: "${{ workflow.dmg_trend_w.return }}"}}
 
-  # 2 -- incidents per crop type. A BAR, not the table this used to be.
-  - name: Crop Damage by Crop
+  # 2 -- FIG. 16, crop damage by SPECIES RESPONSIBLE, stacked by crop.
+  #
+  # Review 0.2: "same approach as Fig. 12. Put species responsible on the
+  # x-axis and stack the bars by crop type ... Suggested caption: 'Crop damage
+  # incidents by species responsible and crop'." This replaces the one-bar-
+  # per-crop chart, which also had no legend to speak of.
+  #
+  # Crop names keep their English half ("Cabbage / Kabichi" -> "Cabbage"), the
+  # same rule species names follow. A report naming more than one crop is
+  # stacked as "Several crops": the form records one extent per report, so it
+  # cannot be split.
+  #
+  # The form offers 23 crops, so unlike livestock the crop list is NOT
+  # scaffolded -- 23 legend rows of zeros would bury the one or two crops a
+  # period actually has. Crops therefore take palette colours in sorted order
+  # within each report. The exception is Not recorded, which must be grey:
+  # it is ALWAYS present (at zero if need be) and carries a leading space, so
+  # it sorts first and always takes the palette's first colour, grey.
+  - name: Crop Damage by Species and Crop
     id: crop_by_crop
     task: apply_sql_query
     partial:
       query: |
-        SELECT COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
-                 CAST(json_extract(event_details, '$."Type of crop"') AS TEXT),
-                 '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS "Crop",
-               COUNT(*) AS "Incidents"
-        FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage'
-        GROUP BY 1 ORDER BY 2 DESC
+        SELECT sp.s AS "Species responsible", cr.c AS "Crop",
+               COALESCE(SUM(CASE WHEN d.c = cr.c AND d.s = sp.s THEN 1 ELSE 0 END), 0) AS "Incidents"
+        FROM (
+          SELECT species_h AS s, COUNT(*) AS total
+          FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage' GROUP BY 1
+        ) sp
+        CROSS JOIN (
+          SELECT ' Not recorded' AS c
+          UNION
+          SELECT c FROM (
+            SELECT CASE
+                     WHEN tc IS NULL OR TRIM(tc) IN ('', '[]') THEN ' Not recorded'
+                     WHEN json_valid(tc) = 1 AND json_type(tc) = 'array' AND json_array_length(tc) > 1 THEN 'Several crops'
+                     WHEN json_valid(tc) = 1 AND json_type(tc) = 'array' THEN
+                       TRIM(CASE WHEN INSTR(json_extract(tc, '$[0]'), ' / ') > 0
+                                 THEN SUBSTR(json_extract(tc, '$[0]'), 1, INSTR(json_extract(tc, '$[0]'), ' / ') - 1)
+                                 ELSE json_extract(tc, '$[0]') END)
+                     ELSE TRIM(CASE WHEN INSTR(tc, ' / ') > 0 THEN SUBSTR(tc, 1, INSTR(tc, ' / ') - 1) ELSE tc END)
+                   END AS c
+            FROM (SELECT CAST(json_extract(event_details, '$."Type of crop"') AS TEXT) AS tc
+                  FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage')
+          )
+        ) cr
+        LEFT JOIN (
+          SELECT s, CASE
+                     WHEN tc IS NULL OR TRIM(tc) IN ('', '[]') THEN ' Not recorded'
+                     WHEN json_valid(tc) = 1 AND json_type(tc) = 'array' AND json_array_length(tc) > 1 THEN 'Several crops'
+                     WHEN json_valid(tc) = 1 AND json_type(tc) = 'array' THEN
+                       TRIM(CASE WHEN INSTR(json_extract(tc, '$[0]'), ' / ') > 0
+                                 THEN SUBSTR(json_extract(tc, '$[0]'), 1, INSTR(json_extract(tc, '$[0]'), ' / ') - 1)
+                                 ELSE json_extract(tc, '$[0]') END)
+                     ELSE TRIM(CASE WHEN INSTR(tc, ' / ') > 0 THEN SUBSTR(tc, 1, INSTR(tc, ' / ') - 1) ELSE tc END)
+                   END AS c
+          FROM (SELECT species_h AS s, CAST(json_extract(event_details, '$."Type of crop"') AS TEXT) AS tc
+                FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage')
+        ) d ON d.s = sp.s
+        GROUP BY sp.s, cr.c
+        ORDER BY MAX(sp.total) DESC, 1, 2
       columns: null
       sanitize: true
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
-  # Review feedback, section 9: "Bar graph - Crop damage incidents by crop:
-  # missing legend. Please add."
-  #
-  # The `layout_kwargs: {barmode: stack}` that used to sit here did nothing at
-  # all: LayoutStyle has no barmode field, and pydantic drops unknown keys
-  # silently, so it never reached plotly. A single-series bar has nothing to
-  # stack anyway -- what it was missing was the legend.
   - name: Draw Crop Bar
     id: crop_bar
-    task: draw_bar_chart
+    task: draw_chart
     partial:
+      x_axis: Species responsible
+      figures:
+      - metric: {display_name: Incidents, aggregator: sum, column: Incidents, decimal_places: 0}
+        chart_type: bar
+      time_interval: null
       category: Crop
-      bar_chart_configs:
-      - {label: Incidents, column: Incidents, agg_func: sum, show_label: true, style: {marker_color: '#b62879'}}
-      layout_kwargs:
+      time_breakdown: null
+      barmode: stack
+      # Grey first (Not recorded always sorts first), then the crop palette --
+      # greens and earth tones that no other chart in the report uses.
+      palette: ['#9e9e9e', '#1a9850', '#fee08b', '#91cf60', '#8c510a', '#d9ef8b',
+                '#bf812d', '#006837', '#dfc27d', '#66bd63', '#543005', '#a6d96a']
+      plot_style: null
+      layout_style:
         showlegend: true
-        legend_title: Measure
-        xaxis: {title: Type of crop}
+        legend_title: Crop
+        xaxis: {title: Species responsible}
         yaxis: {title: Crop damage incidents}
     mapvalues:
       argnames: dataframe
@@ -1786,7 +2217,7 @@ workflow:
      partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: crop_bar},
      mapvalues: {argnames: text, argvalues: "${{ workflow.crop_bar.return }}"}}
   - {name: Crop Bar Widget, id: crop_bar_w, task: create_plot_widget_single_view,
-     skipif: {conditions: *never}, partial: {title: Crop Damage Incidents by Crop},
+     skipif: {conditions: *never}, partial: {title: Crop Damage by Species Responsible and Crop},
      map: {argnames: [view, data], argvalues: "${{ workflow.crop_bar_html.return }}"}}
   - {name: Merge Crop Bar Views, id: crop_bar_wm, task: merge_widget_views,
      partial: {widgets: "${{ workflow.crop_bar_w.return }}"}}
@@ -1826,19 +2257,21 @@ workflow:
                  WHEN c."Damage type" = 'Trampling'        AND LOWER(d.cause_txt) LIKE '%trampl%' THEN 1
                  WHEN c."Damage type" = 'Feeding / raiding'
                       AND (LOWER(d.cause_txt) LIKE '%feed%' OR LOWER(d.cause_txt) LIKE '%raid%')  THEN 1
+                 WHEN c."Damage type" = 'Other'            AND LOWER(d.cause_txt) LIKE '%other%'   THEN 1
                  WHEN c."Damage type" = 'Not recorded'
                       AND (d.cause_txt IS NULL OR d.cause_txt = '')                               THEN 1
                  ELSE 0 END), 0) AS "Incidents"
         FROM (
-                    SELECT '<1 acre' AS ext, '1. <1 acre' AS label
-          UNION ALL SELECT '1-5 acres', '2. 1-5 acres'
-          UNION ALL SELECT '5-10 acres', '3. 5-10 acres'
-          UNION ALL SELECT '>10 acres', '4. >10 acres'
-          UNION ALL SELECT 'Not recorded', '5. Not recorded'
+                    SELECT '<1 acre' AS ext, '<1 acre' AS label
+          UNION ALL SELECT '1-5 acres', '​1-5 acres'
+          UNION ALL SELECT '5-10 acres', '​​5-10 acres'
+          UNION ALL SELECT '>10 acres', '​​​>10 acres'
+          UNION ALL SELECT 'Not recorded', '​​​​Not recorded'
         ) e
         CROSS JOIN (
                     SELECT 'Feeding / raiding' AS "Damage type"
           UNION ALL SELECT 'Not recorded'
+          UNION ALL SELECT 'Other'
           UNION ALL SELECT 'Trampling'
           UNION ALL SELECT 'Uprooting'
         ) c
@@ -1849,6 +2282,7 @@ workflow:
                    '","', ', '), '["', ''), '"]', ''), '[]', '')), '') AS cause_txt
           FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage'
         ) d ON d.ext = e.ext
+        WHERE EXISTS (SELECT 1 FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage')
         GROUP BY 1, 2
         ORDER BY 1, 2
       columns: null
@@ -1868,8 +2302,11 @@ workflow:
       category: Damage type
       time_breakdown: null
       barmode: stack
-      # Sorted: Feeding / raiding, Not recorded, Trampling, Uprooting.
-      palette: ['#ff803e', '#8a8a8a', '#3089ff', '#3e35a3']
+      # Sorted: Feeding / raiding, Not recorded, Other, Trampling, Uprooting.
+      # Review 0.2: "Create a new palette for crop damage type." The old one
+      # borrowed the Infrastructure-damage orange and the Livestock-predation
+      # indigo; these five appear nowhere else, Not recorded grey included.
+      palette: ['#66c2a5', '#9e9e9e', '#e5c494', '#8da0cb', '#a6d854']
       plot_style: null
       layout_style:
         showlegend: true
@@ -1917,8 +2354,8 @@ workflow:
     partial:
       category: Tree crop
       bar_chart_configs:
-      - {label: Incidents,     column: Incidents,     agg_func: sum, show_label: true, style: {marker_color: '#004e26'}}
-      - {label: Trees damaged, column: Trees damaged, agg_func: sum, show_label: true, style: {marker_color: '#7ab800'}}
+      - {label: Incidents,     column: Incidents,     agg_func: sum, show_label: true, style: {marker_color: '#01665e'}}
+      - {label: Trees damaged, column: Trees damaged, agg_func: sum, show_label: true, style: {marker_color: '#80cdc1'}}
       # Grouped, not stacked, and deliberately so: incidents and trees damaged
       # are different units, and stacking them would draw a total that means
       # nothing. The dead `barmode: stack` that used to sit here never took
@@ -1970,10 +2407,10 @@ workflow:
           GROUP BY 1
         ) p
         CROSS JOIN (
-                    SELECT 'Low' AS ext, '1. Low' AS label
-          UNION ALL SELECT 'Medium', '2. Medium'
-          UNION ALL SELECT 'High', '3. High'
-          UNION ALL SELECT 'Not recorded', '4. Not recorded'
+                    SELECT 'Low' AS ext, 'Low' AS label
+          UNION ALL SELECT 'Medium', '​Medium'
+          UNION ALL SELECT 'High', '​​High'
+          UNION ALL SELECT 'Not recorded', '​​​Not recorded'
         ) x
         LEFT JOIN (
           SELECT COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
@@ -1997,7 +2434,9 @@ workflow:
   # Low / Medium / High is an ordered severity scale, so the series labels
   # carry a sort prefix: draw_chart orders its series with sorted(), which
   # would otherwise stack High, Low, Medium alphabetically and make the
-  # gradient meaningless.
+  # gradient meaningless. The prefix is now invisible -- 0 to 3 zero-width
+  # spaces (U+200B), fewer sorting first -- instead of the "1. ", "2. " that
+  # showed in the legend; the crop extent axis (Fig. 17) does the same.
   - name: Draw Infrastructure Damage Bar
     id: infra_bar
     task: draw_chart
@@ -2010,7 +2449,12 @@ workflow:
       category: Extent
       time_breakdown: null
       barmode: stack
-      palette: ['#ffc14d', '#ff803e', '#8c1700', '#8a8a8a']
+      # Review 0.2: "Infrastructure extent: use a light-to-dark ramp of the
+      # infrastructure orange from the conflict palette, since extent is
+      # ordered (low -> high)." Low, Medium, High step from pale to deep around
+      # the conflict palette's #ff803e; Not recorded is grey. The old set
+      # borrowed Human death's dark red for High.
+      palette: ['#ffd9bf', '#ff9f5e', '#c2560f', '#9e9e9e']
       plot_style: null
       layout_style:
         showlegend: true
@@ -2030,26 +2474,68 @@ workflow:
   - {name: Merge Infrastructure Damage Bar Views, id: infra_bar_wm, task: merge_widget_views,
      partial: {widgets: "${{ workflow.infra_bar_w.return }}"}}
 
-  # 6 and 7 -- one map each, as the MRD asks, rather than the single combined
-  # map this used to be.
+  # 6 and 7 -- FIGS. 20 AND 21, one map each, as the MRD asks.
+  #
+  # Review 0.2: "Figs 20 and 21: missing legends" and "Fig. 21: shows 5 points
+  # for 6 infrastructure events. Overlapping points? Please check."
+  #
+  # Checked in EarthRanger: two of the six reports (27 Sep and 26 Oct 2026,
+  # both High, both water pipes and tank) were filed about 10 m apart -- the
+  # same installation damaged twice -- so one dot sat exactly on the other.
+  # Reports within about 100 m of each other (coordinates rounded to 3
+  # decimal places) are now drawn as ONE larger point, its tooltip listing
+  # every report, so a repeat location is visible rather than hidden. Where
+  # the reports in a cell differ, the point takes the most severe extent.
+  #
+  # Both maps now colour by extent of damage and carry two legends: the
+  # extent (crop: pink ramp by acre band; infrastructure: the orange ramp of
+  # Fig. 19), and a point-size key carried by an invisible layer, exactly as
+  # on the predation map. Not recorded is grey.
   - name: Crop Damage Points
     id: crop_points
     task: apply_sql_query
     partial:
       query: |
-        SELECT geometry, species_h AS "Species responsible",
-               COALESCE(json_extract(event_details, '$."Extent of damage"'), '-') AS "Extent",
-               COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
-                 CAST(json_extract(event_details, '$."Type of crop"') AS TEXT),
-                 '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS "Crop",
-               substr(report_time, 1, 16) AS "Date"
-        FROM df
-        WHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL
+        SELECT MIN(geometry) AS geometry,
+               COUNT(*) AS "Reports",
+               CASE WHEN COUNT(*) > 1 THEN 12 ELSE 7 END AS size_px,
+               CASE MAX(rk) WHEN 1 THEN '<1 acre' WHEN 2 THEN '1-5 acres' WHEN 3 THEN '5-10 acres'
+                      WHEN 4 THEN '>10 acres' ELSE 'Not recorded' END AS "Extent",
+               group_concat(item, ' | ') AS "Crop",
+               group_concat(sp, ' | ') AS "Species responsible",
+               group_concat(dt, ' | ') AS "Date"
+        FROM (
+          SELECT geometry, sp, dt, item, CASE
+                     WHEN ext IS NULL OR TRIM(ext) = '' THEN 0
+                     WHEN ext LIKE '%<%' THEN 1
+                     WHEN ext LIKE '1%5%' THEN 2
+                     WHEN ext LIKE '5%10%' THEN 3
+                     WHEN ext LIKE '%>%' THEN 4
+                     ELSE 0 END AS rk,
+                 printf('%.3f %.3f', CAST(substr(wkt, 1, instr(wkt, ' ') - 1) AS REAL),
+                                     CAST(substr(wkt, instr(wkt, ' ') + 1) AS REAL)) AS cell
+          FROM (
+            SELECT geometry, species_h AS sp, substr(report_time, 1, 10) AS dt,
+                   json_extract(event_details, '$."Extent of damage"') AS ext,
+                   COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
+                     CAST(json_extract(event_details, '$."Type of crop"') AS TEXT),
+                     '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS item,
+                   TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS wkt
+            FROM df
+            WHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL
+          )
+        )
+        GROUP BY cell
       columns: null
       sanitize: true
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
+  - {name: Crop Damage Colormap, id: crop_cmap, task: apply_color_map,
+     partial: {input_column_name: Extent, output_column_name: crop_color,
+               colormap: {'<1 acre': '#f3c6df', '1-5 acres': '#e07bb3', '5-10 acres': '#b62879',
+                          '>10 acres': '#6b1446', Not recorded: *not_recorded}},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.crop_points.return }}"}}
   - name: Crop Damage Layer
     id: crop_layer
     task: create_point_layer
@@ -2057,18 +2543,58 @@ workflow:
       conditions: *geo
     partial:
       layer_style:
-        get_radius: 7.0
+        get_radius: size_px
         radius_units: pixels
-        get_fill_color: '#b62879'
+        radius_scale: 1.0
+        fill_color_column: crop_color
         get_line_color: '#ffffff'
         stroked: true
         get_line_width: 1
-        opacity: 0.85
-      legend: null
-      tooltip_columns: [Crop, Species responsible, Extent, Date]
+        opacity: 0.9
+      legend: {label_column: Extent, color_column: crop_color, title: Extent of damage}
+      tooltip_columns: [Reports, Crop, Extent, Species responsible, Date]
     mapvalues:
       argnames: geodataframe
-      argvalues: ${{ workflow.crop_points.return }}
+      argvalues: ${{ workflow.crop_cmap.return }}
+  - name: Crop Damage Size Key Point
+    id: crop_size_key_pt
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT geometry FROM df
+        WHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL
+        LIMIT 1
+      columns: null
+      sanitize: true
+  - name: Crop Damage Size Key
+    id: crop_size_key
+    task: create_point_layer
+    skipif:
+      conditions: *geo
+    partial:
+      geodataframe: ${{ workflow.crop_size_key_pt.return }}
+      layer_style:
+        get_radius: 0.0
+        radius_units: pixels
+        get_fill_color: '#525252'
+        stroked: false
+        opacity: 0.0
+      legend:
+        title: Point size
+        labels: ['Small point: one report', 'Large point: two or more reports within about 100 m']
+        colors: ['#525252', '#525252']
+      tooltip_columns: []
+  - name: Crop Damage Map Layers
+    id: crop_map_layers
+    task: combine_map_layers
+    partial:
+      static_layers:
+      - ${{ workflow.boundary_layer.return }}
+      - ${{ workflow.crop_size_key.return }}
+    mapvalues:
+      argnames: grouped_layers
+      argvalues: ${{ workflow.crop_layer.return }}
   - name: Draw Crop Damage Map
     id: crop_map
     task: draw_ecomap
@@ -2077,17 +2603,12 @@ workflow:
       static: false
       title: null
       north_arrow_style: {placement: top-left}
-      legend_style: {placement: bottom-right}
-      # Review feedback: "Check zoom. Make sure it's not rendering grey tiles."
-      # At 20 the auto-fitted view state zooms past the level the ArcGIS
-      # basemaps actually serve tiles for over rural Laikipia, and a map with
-      # one or two points -- which several of these are -- fits to exactly
-      # that. 15 is inside tile coverage everywhere and still shows
-      # individual bomas.
+      legend_style: *map_legend
       max_zoom: 15
+      view_state: *conservancy_view
     mapvalues:
       argnames: geo_layers
-      argvalues: ${{ workflow.crop_layer.return }}
+      argvalues: ${{ workflow.crop_map_layers.return }}
   - {name: Persist Crop Damage Map, id: crop_map_html, task: persist_text,
      partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: crop_damage_map},
      mapvalues: {argnames: text, argvalues: "${{ workflow.crop_map.return }}"}}
@@ -2102,19 +2623,44 @@ workflow:
     task: apply_sql_query
     partial:
       query: |
-        SELECT geometry, species_h AS "Species responsible",
-               COALESCE(json_extract(event_details, '$."Extent of damage"'), '-') AS "Extent",
-               COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
-                 CAST(json_extract(event_details, '$."Type of Property"') AS TEXT),
-                 '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS "Property",
-               substr(report_time, 1, 16) AS "Date"
-        FROM df
-        WHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL
+        SELECT MIN(geometry) AS geometry,
+               COUNT(*) AS "Reports",
+               CASE WHEN COUNT(*) > 1 THEN 12 ELSE 7 END AS size_px,
+               CASE MAX(rk) WHEN 1 THEN 'Low' WHEN 2 THEN 'Medium' WHEN 3 THEN 'High'
+                      ELSE 'Not recorded' END AS "Extent",
+               group_concat(item, ' | ') AS "Property",
+               group_concat(sp, ' | ') AS "Species responsible",
+               group_concat(dt, ' | ') AS "Date"
+        FROM (
+          SELECT geometry, sp, dt, item, CASE
+                     WHEN ext IS NULL OR TRIM(ext) = '' THEN 0
+                     WHEN LOWER(ext) LIKE 'low%' THEN 1
+                     WHEN LOWER(ext) LIKE 'med%' THEN 2
+                     WHEN LOWER(ext) LIKE 'high%' THEN 3
+                     ELSE 0 END AS rk,
+                 printf('%.3f %.3f', CAST(substr(wkt, 1, instr(wkt, ' ') - 1) AS REAL),
+                                     CAST(substr(wkt, instr(wkt, ' ') + 1) AS REAL)) AS cell
+          FROM (
+            SELECT geometry, species_h AS sp, substr(report_time, 1, 10) AS dt,
+                   json_extract(event_details, '$."Extent of damage"') AS ext,
+                   COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
+                     CAST(json_extract(event_details, '$."Type of Property"') AS TEXT),
+                     '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS item,
+                   TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS wkt
+            FROM df
+            WHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL
+          )
+        )
+        GROUP BY cell
       columns: null
       sanitize: true
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
+  - {name: Infrastructure Damage Colormap, id: infra_cmap, task: apply_color_map,
+     partial: {input_column_name: Extent, output_column_name: infra_color,
+               colormap: {Low: '#ffd9bf', Medium: '#ff9f5e', High: '#c2560f', Not recorded: *not_recorded}},
+     mapvalues: {argnames: df, argvalues: "${{ workflow.infra_points.return }}"}}
   - name: Infrastructure Damage Layer
     id: infra_layer
     task: create_point_layer
@@ -2122,18 +2668,58 @@ workflow:
       conditions: *geo
     partial:
       layer_style:
-        get_radius: 7.0
+        get_radius: size_px
         radius_units: pixels
-        get_fill_color: '#ff803e'
+        radius_scale: 1.0
+        fill_color_column: infra_color
         get_line_color: '#ffffff'
         stroked: true
         get_line_width: 1
-        opacity: 0.85
-      legend: null
-      tooltip_columns: [Property, Species responsible, Extent, Date]
+        opacity: 0.9
+      legend: {label_column: Extent, color_column: infra_color, title: Extent of damage}
+      tooltip_columns: [Reports, Property, Extent, Species responsible, Date]
     mapvalues:
       argnames: geodataframe
-      argvalues: ${{ workflow.infra_points.return }}
+      argvalues: ${{ workflow.infra_cmap.return }}
+  - name: Infrastructure Damage Size Key Point
+    id: infra_size_key_pt
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT geometry FROM df
+        WHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL
+        LIMIT 1
+      columns: null
+      sanitize: true
+  - name: Infrastructure Damage Size Key
+    id: infra_size_key
+    task: create_point_layer
+    skipif:
+      conditions: *geo
+    partial:
+      geodataframe: ${{ workflow.infra_size_key_pt.return }}
+      layer_style:
+        get_radius: 0.0
+        radius_units: pixels
+        get_fill_color: '#525252'
+        stroked: false
+        opacity: 0.0
+      legend:
+        title: Point size
+        labels: ['Small point: one report', 'Large point: two or more reports within about 100 m']
+        colors: ['#525252', '#525252']
+      tooltip_columns: []
+  - name: Infrastructure Damage Map Layers
+    id: infra_map_layers
+    task: combine_map_layers
+    partial:
+      static_layers:
+      - ${{ workflow.boundary_layer.return }}
+      - ${{ workflow.infra_size_key.return }}
+    mapvalues:
+      argnames: grouped_layers
+      argvalues: ${{ workflow.infra_layer.return }}
   - name: Draw Infrastructure Damage Map
     id: infra_map
     task: draw_ecomap
@@ -2142,17 +2728,12 @@ workflow:
       static: false
       title: null
       north_arrow_style: {placement: top-left}
-      legend_style: {placement: bottom-right}
-      # Review feedback: "Check zoom. Make sure it's not rendering grey tiles."
-      # At 20 the auto-fitted view state zooms past the level the ArcGIS
-      # basemaps actually serve tiles for over rural Laikipia, and a map with
-      # one or two points -- which several of these are -- fits to exactly
-      # that. 15 is inside tile coverage everywhere and still shows
-      # individual bomas.
+      legend_style: *map_legend
       max_zoom: 15
+      view_state: *conservancy_view
     mapvalues:
       argnames: geo_layers
-      argvalues: ${{ workflow.infra_layer.return }}
+      argvalues: ${{ workflow.infra_map_layers.return }}
   - {name: Persist Infrastructure Damage Map, id: infra_map_html, task: persist_text,
      partial: {root_path: "${{ env.ECOSCOPE_WORKFLOWS_RESULTS }}", filename_suffix: infrastructure_map},
      mapvalues: {argnames: text, argvalues: "${{ workflow.infra_map.return }}"}}
@@ -2223,8 +2804,8 @@ workflow:
     partial:
       category: Species responsible
       bar_chart_configs:
-      - {label: Carried out, column: Carried out, agg_func: sum, show_label: true, style: {marker_color: '#8c1700'}}
-      - {label: Threatened,  column: Threatened,  agg_func: sum, show_label: true, style: {marker_color: '#f23b0e'}}
+      - {label: Carried out, column: Carried out, agg_func: sum, show_label: true, style: {marker_color: '#54278f'}}
+      - {label: Threatened,  column: Threatened,  agg_func: sum, show_label: true, style: {marker_color: '#bcbddc'}}
       # Grouped, not stacked: an incident can be both threatened and carried
       # out, so the two series overlap and a stacked total would double-count.
       #
@@ -2541,9 +3122,9 @@ workflow:
     - ${{ workflow.hwc_kpi_7_svw.return }}
     # Conflict type -- 9-12. Pie, the seasonality chart that moved here from
     # section 5, then the two maps the MRD asks for: one point per INCIDENT,
-    # then one point per EVENT. trend_w is ungrouped so it feeds unmerged.
+    # then one point per EVENT.
     - ${{ workflow.ctype_bar_wm.return }}
-    - ${{ workflow.trend_w.return }}
+    - ${{ workflow.trend_wm.return }}
     - ${{ workflow.inc_map_wm.return }}
     - ${{ workflow.evt_map_wm.return }}
     # Species responsible -- 13
@@ -2564,7 +3145,7 @@ workflow:
     - ${{ workflow.pred_where_wm.return }}
     # Crop and infrastructure damage -- 24-30, the MRD's seven outputs with the
     # damage-over-time chart first, as the review asked.
-    - ${{ workflow.dmg_trend_w.return }}
+    - ${{ workflow.dmg_trend_wm.return }}
     - ${{ workflow.crop_bar_wm.return }}
     - ${{ workflow.dmg_extent_wm.return }}
     - ${{ workflow.tree_bar_wm.return }}
