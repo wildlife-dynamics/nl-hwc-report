@@ -119,14 +119,23 @@ two per-month charts and the incident storyboard always cover the whole range.
 | 4 | **Incident storyboard** | How the reports making up each linked incident unfolded. Empty until reports are linked in EarthRanger. |
 | 5 | **People injured and killed** | Casualties by the species responsible, and a record of each one with location (village and coordinates to 5 decimal places), action taken and notes. |
 | 6 | **Wildlife killed and injured** | Animals that died or were hurt *because of* conflict, by species and cause, and a map. Natural deaths, disease and poaching are excluded. |
-| 7 | **Livestock predation** | Livestock killed and injured by type; each predator's kills stacked by livestock type; a map coloured by predator with point size banded by livestock killed (both legends on the map); and whether animals were inside or outside a boma. |
-| 8 | **Crop and infrastructure damage** | Damage per month; crop damage by species responsible stacked by crop; crop extent by damage type; tree crops; property by extent; and a map each for crops and property, coloured by extent, with reports within about 100 m of each other drawn as one larger point. |
+| 7 | **Livestock predation** | Livestock killed and injured by type; each predator's kills stacked by livestock type; a map coloured by predator with point size banded by livestock killed (a colour legend, and a key along the bottom of the map drawing the three point sizes); and whether animals were inside or outside a boma. |
+| 8 | **Crop and infrastructure damage** | Damage per month; crop damage by species responsible stacked by crop; crop extent by damage type; tree crops; property by extent; and a map each for crops and property, one point per report, coloured by extent. |
 | 9 | **Retaliation** | How often retaliation against wildlife was threatened or carried out, and against which species. |
 
 **Colours are fixed.** A conflict type, a species, a livestock type, an outcome
 (injured / killed) and an extent band each keep one colour across every chart
 and map, and no two kinds of category share a colour. "Not recorded" and
 "Unknown" are always grey.
+
+**Count axes show whole numbers.** Every chart that counts things starts at 0
+and steps in whole numbers, however small the counts.
+
+**Maps fit their own data.** Each map shows the whole conservancy plus every
+report within about 20 km of it, with a margin of about 2 km. A note under the
+map counts any reports further away. Reports with no location, or at 0,0 or
+outside East Africa, are left off. With a grouper, every month's copy of a
+map uses the same extent, so months can be compared.
 
 ## Downloading the results
 
