@@ -909,6 +909,13 @@ workflow:
   # share one scale. Three steps per chart: the top per view, merged, max.
   # The per-view query runs on an empty frame too (one row, 5.75), so a month
   # with no data never breaks the merge.
+  #
+  # The merge looks two levels into its argument (unpack_depth: 2) so a SKIPPED
+  # per-view top -- every view's frame skipped, which happens only when the
+  # period has no events at all -- skips the merge instead of handing
+  # merge_df a SkipSentinel (CI "empty" test case, 22 Nov 2026). A view is
+  # never skipped on its own: split_groups only makes views that hold events,
+  # and each chart frame runs on its view.
   - name: "Count Axis Top per View, Draw Conflict Trend"
     id: trend_chart_ytop_v
     task: apply_sql_query
@@ -923,7 +930,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.trend_df.return }}
   - {name: 'Count Axis Top, All Views, Draw Conflict Trend', id: trend_chart_ytop_all, task: merge_df,
-     skipif: {conditions: *deps}, partial: {iterables: "${{ workflow.trend_chart_ytop_v.return }}"}}
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.trend_chart_ytop_v.return }}"}}
   - {name: 'Count Axis Top, Draw Conflict Trend', id: trend_chart_ytop, task: dataframe_column_max,
      skipif: {conditions: *deps}, partial: {df: "${{ workflow.trend_chart_ytop_all.return }}", column_name: ytop}}
   - name: Draw Conflict Trend
@@ -1043,7 +1050,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.species_x.return }}
   - {name: 'Count Axis Top, All Views, Draw Species Bar', id: species_bar_ytop_all, task: merge_df,
-     skipif: {conditions: *deps}, partial: {iterables: "${{ workflow.species_bar_ytop_v.return }}"}}
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.species_bar_ytop_v.return }}"}}
   - {name: 'Count Axis Top, Draw Species Bar', id: species_bar_ytop, task: dataframe_column_max,
      skipif: {conditions: *deps}, partial: {df: "${{ workflow.species_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Species Bar
@@ -1451,7 +1458,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.cas_by_species.return }}
   - {name: 'Count Axis Top, All Views, Draw Casualties Bar', id: cas_bar_ytop_all, task: merge_df,
-     skipif: {conditions: *deps}, partial: {iterables: "${{ workflow.cas_bar_ytop_v.return }}"}}
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.cas_bar_ytop_v.return }}"}}
   - {name: 'Count Axis Top, Draw Casualties Bar', id: cas_bar_ytop, task: dataframe_column_max,
      skipif: {conditions: *deps}, partial: {df: "${{ workflow.cas_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Casualties Bar
@@ -1612,7 +1619,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.wl_by_species.return }}
   - {name: 'Count Axis Top, All Views, Draw Wildlife Casualties Bar', id: wl_bar_ytop_all, task: merge_df,
-     skipif: {conditions: *deps}, partial: {iterables: "${{ workflow.wl_bar_ytop_v.return }}"}}
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.wl_bar_ytop_v.return }}"}}
   - {name: 'Count Axis Top, Draw Wildlife Casualties Bar', id: wl_bar_ytop, task: dataframe_column_max,
      skipif: {conditions: *deps}, partial: {df: "${{ workflow.wl_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Wildlife Casualties Bar
@@ -1911,7 +1918,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.pred_by_species.return }}
   - {name: 'Count Axis Top, All Views, Draw Livestock Losses Bar', id: pred_bar_ytop_all, task: merge_df,
-     skipif: {conditions: *deps}, partial: {iterables: "${{ workflow.pred_bar_ytop_v.return }}"}}
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.pred_bar_ytop_v.return }}"}}
   - {name: 'Count Axis Top, Draw Livestock Losses Bar', id: pred_bar_ytop, task: dataframe_column_max,
      skipif: {conditions: *deps}, partial: {df: "${{ workflow.pred_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Livestock Losses Bar
@@ -2020,7 +2027,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.pred_predators.return }}
   - {name: 'Count Axis Top, All Views, Draw Predators Bar', id: pred_pred_bar_ytop_all, task: merge_df,
-     skipif: {conditions: *deps}, partial: {iterables: "${{ workflow.pred_pred_bar_ytop_v.return }}"}}
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.pred_pred_bar_ytop_v.return }}"}}
   - {name: 'Count Axis Top, Draw Predators Bar', id: pred_pred_bar_ytop, task: dataframe_column_max,
      skipif: {conditions: *deps}, partial: {df: "${{ workflow.pred_pred_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Predators Bar
@@ -2507,7 +2514,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.dmg_trend_df.return }}
   - {name: 'Count Axis Top, All Views, Draw Damage Trend', id: dmg_trend_ytop_all, task: merge_df,
-     skipif: {conditions: *deps}, partial: {iterables: "${{ workflow.dmg_trend_ytop_v.return }}"}}
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.dmg_trend_ytop_v.return }}"}}
   - {name: 'Count Axis Top, Draw Damage Trend', id: dmg_trend_ytop, task: dataframe_column_max,
      skipif: {conditions: *deps}, partial: {df: "${{ workflow.dmg_trend_ytop_all.return }}", column_name: ytop}}
   - name: Draw Damage Trend
@@ -2633,7 +2640,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.crop_by_crop.return }}
   - {name: 'Count Axis Top, All Views, Draw Crop Bar', id: crop_bar_ytop_all, task: merge_df,
-     skipif: {conditions: *deps}, partial: {iterables: "${{ workflow.crop_bar_ytop_v.return }}"}}
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.crop_bar_ytop_v.return }}"}}
   - {name: 'Count Axis Top, Draw Crop Bar', id: crop_bar_ytop, task: dataframe_column_max,
      skipif: {conditions: *deps}, partial: {df: "${{ workflow.crop_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Crop Bar
@@ -2752,7 +2759,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.dmg_extent.return }}
   - {name: 'Count Axis Top, All Views, Draw Damage Extent Bar', id: dmg_extent_bar_ytop_all, task: merge_df,
-     skipif: {conditions: *deps}, partial: {iterables: "${{ workflow.dmg_extent_bar_ytop_v.return }}"}}
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.dmg_extent_bar_ytop_v.return }}"}}
   - {name: 'Count Axis Top, Draw Damage Extent Bar', id: dmg_extent_bar_ytop, task: dataframe_column_max,
      skipif: {conditions: *deps}, partial: {df: "${{ workflow.dmg_extent_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Damage Extent Bar
@@ -2827,7 +2834,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.tree_by_type.return }}
   - {name: 'Count Axis Top, All Views, Draw Tree Crop Bar', id: tree_bar_ytop_all, task: merge_df,
-     skipif: {conditions: *deps}, partial: {iterables: "${{ workflow.tree_bar_ytop_v.return }}"}}
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.tree_bar_ytop_v.return }}"}}
   - {name: 'Count Axis Top, Draw Tree Crop Bar', id: tree_bar_ytop, task: dataframe_column_max,
      skipif: {conditions: *deps}, partial: {df: "${{ workflow.tree_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Tree Crop Bar
@@ -2933,7 +2940,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.infra_by_type.return }}
   - {name: 'Count Axis Top, All Views, Draw Infrastructure Damage Bar', id: infra_bar_ytop_all, task: merge_df,
-     skipif: {conditions: *deps}, partial: {iterables: "${{ workflow.infra_bar_ytop_v.return }}"}}
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.infra_bar_ytop_v.return }}"}}
   - {name: 'Count Axis Top, Draw Infrastructure Damage Bar', id: infra_bar_ytop, task: dataframe_column_max,
      skipif: {conditions: *deps}, partial: {df: "${{ workflow.infra_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Infrastructure Damage Bar
@@ -3320,7 +3327,7 @@ workflow:
       argnames: df
       argvalues: ${{ workflow.ret_by_species.return }}
   - {name: 'Count Axis Top, All Views, Draw Retaliation Bar', id: ret_bar_ytop_all, task: merge_df,
-     skipif: {conditions: *deps}, partial: {iterables: "${{ workflow.ret_bar_ytop_v.return }}"}}
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.ret_bar_ytop_v.return }}"}}
   - {name: 'Count Axis Top, Draw Retaliation Bar', id: ret_bar_ytop, task: dataframe_column_max,
      skipif: {conditions: *deps}, partial: {df: "${{ workflow.ret_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Retaliation Bar
