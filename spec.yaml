@@ -895,6 +895,44 @@ workflow:
   # Months are cut from the local timestamp text (substr), not strftime,
   # which converts to UTC and would move a 1 a.m. incident on the 1st into
   # the previous month.
+  # COUNT AXES. Review 0.3: "several charts still show fractional ticks
+  # (0.2, 0.5, 1.5) when counts are small ... Please force whole numbers on
+  # every count axis so this holds whatever the data."
+  #
+  # ecoscope-platform 2.28's AxisStyle has only `title` and `range` -- dtick,
+  # tickformat and rangemode are dropped by pydantic -- so the range is the
+  # one lever. plotly picks its tick step as range / (at most 10 ticks),
+  # rounded up to 1, 2 or 5 x 10^n: any range over 5 gives a step of 1 or
+  # more, never a fraction. So every count chart gets a y range of
+  # [0, max(5, tallest bar) x 1.15] -- the 15% is headroom for the bar -- and
+  # the tallest bar is taken over every view, so with a grouper all months
+  # share one scale. Three steps per chart: the top per view, merged, max.
+  # The per-view query runs on an empty frame too (one row, 5.75), so a month
+  # with no data never breaks the merge.
+  #
+  # The merge looks two levels into its argument (unpack_depth: 2) so a SKIPPED
+  # per-view top -- every view's frame skipped, which happens only when the
+  # period has no events at all -- skips the merge instead of handing
+  # merge_df a SkipSentinel (CI "empty" test case, 22 Nov 2026). A view is
+  # never skipped on its own: split_groups only makes views that hold events,
+  # and each chart frame runs on its view.
+  - name: "Count Axis Top per View, Draw Conflict Trend"
+    id: trend_chart_ytop_v
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      query: |
+        SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Month" AS k, SUM("Incidents") AS t FROM df GROUP BY 1)
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.trend_df.return }}
+  - {name: 'Count Axis Top, All Views, Draw Conflict Trend', id: trend_chart_ytop_all, task: merge_df,
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.trend_chart_ytop_v.return }}"}}
+  - {name: 'Count Axis Top, Draw Conflict Trend', id: trend_chart_ytop, task: dataframe_column_max,
+     skipif: {conditions: *deps}, partial: {df: "${{ workflow.trend_chart_ytop_all.return }}", column_name: ytop}}
   - name: Draw Conflict Trend
     id: trend_chart
     task: draw_chart
@@ -914,7 +952,7 @@ workflow:
         showlegend: true
         legend_title: Conflict type
         xaxis: {title: Month}
-        yaxis: {title: Conflict events}
+        yaxis: {title: Conflict events, range: [0, "${{ workflow.trend_chart_ytop.return }}"]}
     mapvalues:
       argnames: dataframe
       argvalues: ${{ workflow.trend_df.return }}
@@ -998,6 +1036,23 @@ workflow:
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
+  - name: "Count Axis Top per View, Draw Species Bar"
+    id: species_bar_ytop_v
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      query: |
+        SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Species responsible" AS k, SUM("Events") AS t FROM df GROUP BY 1)
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.species_x.return }}
+  - {name: 'Count Axis Top, All Views, Draw Species Bar', id: species_bar_ytop_all, task: merge_df,
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.species_bar_ytop_v.return }}"}}
+  - {name: 'Count Axis Top, Draw Species Bar', id: species_bar_ytop, task: dataframe_column_max,
+     skipif: {conditions: *deps}, partial: {df: "${{ workflow.species_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Species Bar
     id: species_bar
     task: draw_chart
@@ -1018,7 +1073,7 @@ workflow:
         showlegend: true
         legend_title: Conflict type
         xaxis: {title: Species responsible}
-        yaxis: {title: Conflict events}
+        yaxis: {title: Conflict events, range: [0, "${{ workflow.species_bar_ytop.return }}"]}
     mapvalues:
       argnames: dataframe
       argvalues: ${{ workflow.species_x.return }}
@@ -1173,6 +1228,90 @@ workflow:
   #
   # Same colour dict as the incident map and the pie, so a type is one colour
   # across all three.
+  # MAP EXTENT. Review 0.3: "set each map's extent from its own data. Start
+  # from the conservancy boundary, expand to include every point, and add a
+  # ~2 km buffer. Never zoom tighter than the boundary, even for one or two
+  # points. Cap the extent at the boundary + ~20 km, and add a note under the
+  # map for any points beyond it ('N reports fall outside the map area').
+  # Points at 0,0 or outside East Africa stay excluded as now."
+  #
+  # {m}_view computes the view from that map's own reports over the whole
+  # period: the boundary's box, grown to take in every point within ~20 km
+  # (0.18 deg) of it, plus 0.018 deg (~2 km), and never past the 20 km cap.
+  # Zoom fits that box in an 880 x 440 px area -- the map widgets are about
+  # 1085 x 520 px (layout height 12) and the screenshots 1280 x 720, so the
+  # legend keeps its corner -- as log2(px per degree x 360 / 512), deck.gl's
+  # 512 px tile convention.
+  #
+  # CAPPED AT ZOOM 10.49, so a view is never tighter than the boundary needs
+  # and the imagery matches the management report. deck.gl loads tile level
+  # round(zoom + 1) for these 256 px tiles: the management report's fixed
+  # zoom 10 gets level 11, which for this area is a cloud-free Esri World
+  # Imagery mosaic; zoom 10.5 and over gets level 12, which is cloudy (first
+  # test run, 22 Nov 2026: "the clouds are back"). Below the cap the view
+  # zooms out as far as the reports need, up to the 20 km cap.
+  #
+  # ONE VIEW PER MAP, NOT PER MONTH. draw_ecomap's view_state is a plain
+  # partial: wt-compiler allows only one per-view argument in mapvalues
+  # (geo_layers), so with a grouper every month's map shares the extent of
+  # the whole period -- which also keeps their scale comparable. With the
+  # default single view this is exactly "the map's own data". draw_ecomap's
+  # own auto-fit (no view_state) was not used: it rounds zoom DOWN to a whole
+  # number sized for a 256-512 px map, which on these 1280 px maps would draw
+  # the conservancy no bigger than the old fixed view.
+  #
+  # {m}_outside is the "N reports fall outside the map area" note: no rows
+  # when there are none, so the report prints nothing. It counts only points
+  # inside East Africa (longitude 33-42, latitude -5 to 5, the management
+  # report's rule): 0,0 and other impossible locations are typing errors, not
+  # reports elsewhere, and are neither mapped nor counted here.
+  - name: Conflict Event Map View
+    id: evt_map_view
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT lon, lat - (0.0 / 2.0) / ppd AS lat,
+               MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd
+        FROM (
+          SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,
+                 MIN(880.0 / (x1 - x0), (440.0 - 0.0) / (y1 - y0)) AS ppd
+          FROM (
+            SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,
+                   MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,
+                   MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,
+                   MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1
+            FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE is_conflict = 1 AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+          )
+        )
+      columns: null
+      sanitize: true
+  - {name: Conflict Event Map View Longitude, id: evt_map_lon, task: dataframe_column_max,
+     partial: {df: "${{ workflow.evt_map_view.return }}", column_name: lon}}
+  - {name: Conflict Event Map View Latitude, id: evt_map_lat, task: dataframe_column_max,
+     partial: {df: "${{ workflow.evt_map_view.return }}", column_name: lat}}
+  - {name: Conflict Event Map View Zoom, id: evt_map_zoom, task: dataframe_column_max,
+     partial: {df: "${{ workflow.evt_map_view.return }}", column_name: zoom}}
+  - name: Conflict Event Map Reports Outside the Map
+    id: evt_map_outside
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT printf('%d %s fall%s outside the map area, more than about 20 km beyond the conservancy boundary.',
+                      n, CASE WHEN n = 1 THEN 'report' ELSE 'reports' END, CASE WHEN n = 1 THEN 's' ELSE '' END) AS "Note"
+        FROM (
+          SELECT COUNT(*) AS n
+          FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x,
+                       CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y
+                FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w
+                      FROM df WHERE is_conflict = 1 AND geometry IS NOT NULL))
+          WHERE x BETWEEN 33 AND 42 AND y BETWEEN -5 AND 5
+          AND NOT (x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+        )
+        WHERE n > 0
+      columns: null
+      sanitize: true
   - name: Event Points
     id: evt_points
     task: apply_sql_query
@@ -1235,7 +1374,12 @@ workflow:
       north_arrow_style: {placement: top-left}
       legend_style: *map_legend
       max_zoom: 15
-      view_state: *conservancy_view
+      view_state:
+        longitude: ${{ workflow.evt_map_lon.return }}
+        latitude: ${{ workflow.evt_map_lat.return }}
+        zoom: ${{ workflow.evt_map_zoom.return }}
+        pitch: 0
+        bearing: 0
     mapvalues:
       argnames: geo_layers
       argvalues: ${{ workflow.evt_map_layers.return }}
@@ -1300,6 +1444,23 @@ workflow:
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
+  - name: "Count Axis Top per View, Draw Casualties Bar"
+    id: cas_bar_ytop_v
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      query: |
+        SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Species responsible" AS k, SUM("People") AS t FROM df GROUP BY 1)
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.cas_by_species.return }}
+  - {name: 'Count Axis Top, All Views, Draw Casualties Bar', id: cas_bar_ytop_all, task: merge_df,
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.cas_bar_ytop_v.return }}"}}
+  - {name: 'Count Axis Top, Draw Casualties Bar', id: cas_bar_ytop, task: dataframe_column_max,
+     skipif: {conditions: *deps}, partial: {df: "${{ workflow.cas_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Casualties Bar
     id: cas_bar
     task: draw_chart
@@ -1318,7 +1479,7 @@ workflow:
         showlegend: true
         legend_title: Outcome
         xaxis: {title: Species responsible}
-        yaxis: {title: People injured or killed}
+        yaxis: {title: People injured or killed, range: [0, "${{ workflow.cas_bar_ytop.return }}"]}
     mapvalues:
       argnames: dataframe
       argvalues: ${{ workflow.cas_by_species.return }}
@@ -1444,6 +1605,23 @@ workflow:
       argvalues: ${{ workflow.events_grouped.return }}
   # STACKED. Review feedback, section 7: "Bar chart - Wildlife killed and
   # injured by species: change to stacked bar chart."
+  - name: "Count Axis Top per View, Draw Wildlife Casualties Bar"
+    id: wl_bar_ytop_v
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      query: |
+        SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Species" AS k, SUM("Animals") AS t FROM df GROUP BY 1)
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.wl_by_species.return }}
+  - {name: 'Count Axis Top, All Views, Draw Wildlife Casualties Bar', id: wl_bar_ytop_all, task: merge_df,
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.wl_bar_ytop_v.return }}"}}
+  - {name: 'Count Axis Top, Draw Wildlife Casualties Bar', id: wl_bar_ytop, task: dataframe_column_max,
+     skipif: {conditions: *deps}, partial: {df: "${{ workflow.wl_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Wildlife Casualties Bar
     id: wl_bar
     task: draw_chart
@@ -1462,7 +1640,7 @@ workflow:
         showlegend: true
         legend_title: Outcome
         xaxis: {title: Species}
-        yaxis: {title: Animals killed or injured}
+        yaxis: {title: Animals killed or injured, range: [0, "${{ workflow.wl_bar_ytop.return }}"]}
     mapvalues:
       argnames: dataframe
       argvalues: ${{ workflow.wl_by_species.return }}
@@ -1553,6 +1731,53 @@ workflow:
   - {name: Merge Wildlife Cause Bar Views, id: wl_cause_wm, task: merge_widget_views,
      partial: {widgets: "${{ workflow.wl_cause_w.return }}"}}
 
+  - name: Wildlife Casualty Map View
+    id: wl_map_view
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT lon, lat - (0.0 / 2.0) / ppd AS lat,
+               MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd
+        FROM (
+          SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,
+                 MIN(880.0 / (x1 - x0), (440.0 - 0.0) / (y1 - y0)) AS ppd
+          FROM (
+            SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,
+                   MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,
+                   MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,
+                   MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1
+            FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE is_conflict = 1 AND event_type IN ('animal_carcass', 'sick_injured_animal') AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+          )
+        )
+      columns: null
+      sanitize: true
+  - {name: Wildlife Casualty Map View Longitude, id: wl_map_lon, task: dataframe_column_max,
+     partial: {df: "${{ workflow.wl_map_view.return }}", column_name: lon}}
+  - {name: Wildlife Casualty Map View Latitude, id: wl_map_lat, task: dataframe_column_max,
+     partial: {df: "${{ workflow.wl_map_view.return }}", column_name: lat}}
+  - {name: Wildlife Casualty Map View Zoom, id: wl_map_zoom, task: dataframe_column_max,
+     partial: {df: "${{ workflow.wl_map_view.return }}", column_name: zoom}}
+  - name: Wildlife Casualty Map Reports Outside the Map
+    id: wl_map_outside
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT printf('%d %s fall%s outside the map area, more than about 20 km beyond the conservancy boundary.',
+                      n, CASE WHEN n = 1 THEN 'report' ELSE 'reports' END, CASE WHEN n = 1 THEN 's' ELSE '' END) AS "Note"
+        FROM (
+          SELECT COUNT(*) AS n
+          FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x,
+                       CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y
+                FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w
+                      FROM df WHERE is_conflict = 1 AND event_type IN ('animal_carcass', 'sick_injured_animal') AND geometry IS NOT NULL))
+          WHERE x BETWEEN 33 AND 42 AND y BETWEEN -5 AND 5
+          AND NOT (x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+        )
+        WHERE n > 0
+      columns: null
+      sanitize: true
   - name: Wildlife Casualty Points
     id: wl_points
     task: apply_sql_query
@@ -1617,7 +1842,12 @@ workflow:
       # that. 15 is inside tile coverage everywhere and still shows
       # individual bomas.
       max_zoom: 15
-      view_state: *conservancy_view
+      view_state:
+        longitude: ${{ workflow.wl_map_lon.return }}
+        latitude: ${{ workflow.wl_map_lat.return }}
+        zoom: ${{ workflow.wl_map_zoom.return }}
+        pitch: 0
+        bearing: 0
     mapvalues:
       argnames: geo_layers
       argvalues: ${{ workflow.wl_map_layers.return }}
@@ -1674,6 +1904,23 @@ workflow:
   # CROSS JOIN turns the two aggregate columns into two rows per species, which
   # is the shape draw_chart's `category` needs, and guarantees both series
   # exist so `outcome_palette` keeps light blue on injured.
+  - name: "Count Axis Top per View, Draw Livestock Losses Bar"
+    id: pred_bar_ytop_v
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      query: |
+        SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Livestock species" AS k, SUM("Animals") AS t FROM df GROUP BY 1)
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.pred_by_species.return }}
+  - {name: 'Count Axis Top, All Views, Draw Livestock Losses Bar', id: pred_bar_ytop_all, task: merge_df,
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.pred_bar_ytop_v.return }}"}}
+  - {name: 'Count Axis Top, Draw Livestock Losses Bar', id: pred_bar_ytop, task: dataframe_column_max,
+     skipif: {conditions: *deps}, partial: {df: "${{ workflow.pred_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Livestock Losses Bar
     id: pred_bar
     task: draw_chart
@@ -1692,7 +1939,7 @@ workflow:
         showlegend: true
         legend_title: Outcome
         xaxis: {title: Livestock species}
-        yaxis: {title: Animals killed or injured}
+        yaxis: {title: Animals killed or injured, range: [0, "${{ workflow.pred_bar_ytop.return }}"]}
     mapvalues:
       argnames: dataframe
       argvalues: ${{ workflow.pred_by_species.return }}
@@ -1766,6 +2013,23 @@ workflow:
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
+  - name: "Count Axis Top per View, Draw Predators Bar"
+    id: pred_pred_bar_ytop_v
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      query: |
+        SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Predator" AS k, SUM("Livestock killed") AS t FROM df GROUP BY 1)
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.pred_predators.return }}
+  - {name: 'Count Axis Top, All Views, Draw Predators Bar', id: pred_pred_bar_ytop_all, task: merge_df,
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.pred_pred_bar_ytop_v.return }}"}}
+  - {name: 'Count Axis Top, Draw Predators Bar', id: pred_pred_bar_ytop, task: dataframe_column_max,
+     skipif: {conditions: *deps}, partial: {df: "${{ workflow.pred_pred_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Predators Bar
     id: pred_pred_bar
     task: draw_chart
@@ -1786,7 +2050,7 @@ workflow:
         showlegend: true
         legend_title: Livestock killed
         xaxis: {title: Predator species}
-        yaxis: {title: Livestock killed}
+        yaxis: {title: Livestock killed, range: [0, "${{ workflow.pred_pred_bar_ytop.return }}"]}
     mapvalues:
       argnames: dataframe
       argvalues: ${{ workflow.pred_predators.return }}
@@ -1852,11 +2116,9 @@ workflow:
   # killed?" draw_ecomap's legend draws colour swatches only -- it has no
   # notion of size -- so the sizes are made SAY-ABLE instead: three fixed bands
   # (0-1, 2-4, 5 or more killed) at three fixed radii, which a text legend can
-  # name exactly. The size legend is a second, titled legend box carried by an
-  # invisible layer (`pred_size_key` below): one real predation point drawn at
-  # zero opacity, whose only job is to put "Livestock killed" and its three
-  # bands on the map. A continuous radius looked more precise but could not be
-  # read back by anyone, which is what the review was asking for.
+  # name exactly. A continuous radius looked more precise but could not be
+  # read back by anyone. Since review 0.3 the key shows the circles
+  # themselves, drawn on the map (see SIZE KEY below).
   #
   # Colour: review 0.2 -- "Use a fixed species palette everywhere species
   # appear." The predator colours used to be the conflict-type hexes dealt out
@@ -1866,6 +2128,53 @@ workflow:
   # drawn as "Other species", and "Unknown" is grey like every not-recorded
   # value. The SQL folds names onto those keys, because apply_color_map paints
   # an unlisted value fully transparent.
+  - name: Predation Map View
+    id: pred_map_view
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT lon, lat - (80.0 / 2.0) / ppd AS lat,
+               MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd
+        FROM (
+          SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,
+                 MIN(880.0 / (x1 - x0), (440.0 - 80.0) / (y1 - y0)) AS ppd
+          FROM (
+            SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,
+                   MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,
+                   MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,
+                   MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1
+            FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+          )
+        )
+      columns: null
+      sanitize: true
+  - {name: Predation Map View Longitude, id: pred_map_lon, task: dataframe_column_max,
+     partial: {df: "${{ workflow.pred_map_view.return }}", column_name: lon}}
+  - {name: Predation Map View Latitude, id: pred_map_lat, task: dataframe_column_max,
+     partial: {df: "${{ workflow.pred_map_view.return }}", column_name: lat}}
+  - {name: Predation Map View Zoom, id: pred_map_zoom, task: dataframe_column_max,
+     partial: {df: "${{ workflow.pred_map_view.return }}", column_name: zoom}}
+  - name: Predation Map Reports Outside the Map
+    id: pred_map_outside
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT printf('%d %s fall%s outside the map area, more than about 20 km beyond the conservancy boundary.',
+                      n, CASE WHEN n = 1 THEN 'report' ELSE 'reports' END, CASE WHEN n = 1 THEN 's' ELSE '' END) AS "Note"
+        FROM (
+          SELECT COUNT(*) AS n
+          FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x,
+                       CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y
+                FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w
+                      FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL))
+          WHERE x BETWEEN 33 AND 42 AND y BETWEEN -5 AND 5
+          AND NOT (x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+        )
+        WHERE n > 0
+      columns: null
+      sanitize: true
   - name: Predation Points
     id: pred_points
     task: apply_sql_query
@@ -1936,44 +2245,151 @@ workflow:
     mapvalues:
       argnames: geodataframe
       argvalues: ${{ workflow.pred_cmap.return }}
-  # The size key. Ungrouped -- one invisible point taken from the whole period
-  # -- so it joins every view through combine_map_layers' static slot.
-  - name: Predation Size Key Point
-    id: pred_size_key_pt
+  # SIZE KEY. Review 0.3: "Fig. 13: are you able to make the size legend show
+  # the actual circle sizes, each labelled with the value it stands for?"
+  #
+  # Yes, but not in the legend box: draw_ecomap's legend draws colour
+  # swatches only. The key is drawn ON the map instead -- three real points
+  # at the same pixel radii as the data (6 / 11 / 17 px), each labelled, on a
+  # white panel -- in an 80 px strip the Predation Map View keeps free along
+  # the bottom of the 440 px fit area, so it can never cover a report. Positions are
+  # pixel offsets from the view centre, turned into degrees with the view's
+  # own pixels-per-degree, so the key keeps its size and spacing at any zoom.
+  # Ungrouped, from the whole period, and joined to every view as a static
+  # layer, like the boundary.
+  - name: Predation Size Key Panel
+    id: pred_key_box
     task: apply_sql_query
     partial:
       df: ${{ workflow.events_indexed.return }}
       query: |
-        SELECT geometry FROM df
-        WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL
-        LIMIT 1
+        SELECT printf('POLYGON ((%.6f %.6f, %.6f %.6f, %.6f %.6f, %.6f %.6f, %.6f %.6f))',
+                      lon + -242.0 / ppd, lat + -212.0 / ppd, lon + 292.0 / ppd, lat + -212.0 / ppd,
+                      lon + 292.0 / ppd, lat + -148.0 / ppd, lon + -242.0 / ppd, lat + -148.0 / ppd,
+                      lon + -242.0 / ppd, lat + -212.0 / ppd) AS geometry
+        FROM (
+          SELECT lon, lat - (80.0 / 2.0) / ppd AS lat,
+                 MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd
+          FROM (
+            SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,
+                   MIN(880.0 / (x1 - x0), (440.0 - 80.0) / (y1 - y0)) AS ppd
+            FROM (
+              SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,
+                     MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,
+                     MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,
+                     MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1
+              FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+            )
+          )
+        )
       columns: null
       sanitize: true
-  - name: Predation Size Key
-    id: pred_size_key
-    task: create_point_layer
-    skipif:
-      conditions: *geo
+  - name: Predation Size Key Circles
+    id: pred_key_pts
+    task: apply_sql_query
     partial:
-      geodataframe: ${{ workflow.pred_size_key_pt.return }}
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT printf('POINT (%.6f %.6f)', v.lon + k.dx / v.ppd, v.lat + (-180.0) / v.ppd) AS geometry,
+               k.size_px AS size_px
+        FROM (SELECT -40 AS dx, 6 AS size_px UNION ALL SELECT 70 AS dx, 11 AS size_px UNION ALL SELECT 195 AS dx, 17 AS size_px) k
+        CROSS JOIN (
+          SELECT lon, lat - (80.0 / 2.0) / ppd AS lat,
+                 MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd
+          FROM (
+            SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,
+                   MIN(880.0 / (x1 - x0), (440.0 - 80.0) / (y1 - y0)) AS ppd
+            FROM (
+              SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,
+                     MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,
+                     MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,
+                     MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1
+              FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+            )
+          )
+        ) v
+      columns: null
+      sanitize: true
+  - name: Predation Size Key Labels
+    id: pred_key_lbl
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT printf('POINT (%.6f %.6f)', v.lon + k.dx / v.ppd, v.lat + (-180.0) / v.ppd) AS geometry,
+               k.label AS label
+        FROM (SELECT -232 AS dx, 'Livestock killed:' AS label UNION ALL SELECT -28 AS dx, '0 or 1' AS label UNION ALL SELECT 87 AS dx, '2 to 4' AS label UNION ALL SELECT 218 AS dx, '5 or more' AS label) k
+        CROSS JOIN (
+          SELECT lon, lat - (80.0 / 2.0) / ppd AS lat,
+                 MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd
+          FROM (
+            SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,
+                   MIN(880.0 / (x1 - x0), (440.0 - 80.0) / (y1 - y0)) AS ppd
+            FROM (
+              SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,
+                     MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,
+                     MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,
+                     MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1
+              FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+            )
+          )
+        ) v
+      columns: null
+      sanitize: true
+  - name: Predation Size Key Panel Layer
+    id: pred_key_box_layer
+    task: create_polygon_layer
+    partial:
+      geodataframe: ${{ workflow.pred_key_box.return }}
       layer_style:
-        get_radius: 0.0
-        radius_units: pixels
-        get_fill_color: '#525252'
-        stroked: false
-        opacity: 0.0
-      legend:
-        title: Livestock killed (point size)
-        labels: ['Small point: 0 or 1', 'Medium point: 2 to 4', 'Large point: 5 or more']
-        colors: ['#525252', '#525252', '#525252']
+        get_fill_color: '#ffffff'
+        get_line_color: '#9e9e9e'
+        get_line_width: 1
+        stroked: true
+        opacity: 0.9
+        pickable: false
+      legend: null
       tooltip_columns: []
+  - name: Predation Size Key Circle Layer
+    id: pred_key_pts_layer
+    task: create_point_layer
+    partial:
+      geodataframe: ${{ workflow.pred_key_pts.return }}
+      layer_style:
+        get_radius: size_px
+        radius_units: pixels
+        radius_scale: 1.0
+        get_fill_color: '#737373'
+        get_line_color: '#ffffff'
+        stroked: true
+        get_line_width: 1
+        opacity: 0.85
+        pickable: false
+      legend: null
+      tooltip_columns: []
+  - name: Predation Size Key Label Layer
+    id: pred_key_lbl_layer
+    task: create_text_layer
+    partial:
+      geodataframe: ${{ workflow.pred_key_lbl.return }}
+      layer_style:
+        get_text: label
+        get_color: [33, 33, 33, 255]
+        font_family: Helvetica, Arial, sans-serif
+        font_weight: bold
+        get_size: 12
+        get_text_anchor: start
+        get_alignment_baseline: center
+        pickable: false
   - name: Predation Map Layers
     id: pred_map_layers
     task: combine_map_layers
     partial:
       static_layers:
       - ${{ workflow.boundary_layer.return }}
-      - ${{ workflow.pred_size_key.return }}
+      - ${{ workflow.pred_key_box_layer.return }}
+      - ${{ workflow.pred_key_pts_layer.return }}
+      - ${{ workflow.pred_key_lbl_layer.return }}
     mapvalues:
       argnames: grouped_layers
       argvalues: ${{ workflow.pred_layer.return }}
@@ -1993,7 +2409,12 @@ workflow:
       # that. 15 is inside tile coverage everywhere and still shows
       # individual bomas.
       max_zoom: 15
-      view_state: *conservancy_view
+      view_state:
+        longitude: ${{ workflow.pred_map_lon.return }}
+        latitude: ${{ workflow.pred_map_lat.return }}
+        zoom: ${{ workflow.pred_map_zoom.return }}
+        pitch: 0
+        bearing: 0
     mapvalues:
       argnames: geo_layers
       argvalues: ${{ workflow.pred_map_layers.return }}
@@ -2079,6 +2500,23 @@ workflow:
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
+  - name: "Count Axis Top per View, Draw Damage Trend"
+    id: dmg_trend_ytop_v
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      query: |
+        SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Month" AS k, SUM("Events") AS t FROM df GROUP BY 1)
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.dmg_trend_df.return }}
+  - {name: 'Count Axis Top, All Views, Draw Damage Trend', id: dmg_trend_ytop_all, task: merge_df,
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.dmg_trend_ytop_v.return }}"}}
+  - {name: 'Count Axis Top, Draw Damage Trend', id: dmg_trend_ytop, task: dataframe_column_max,
+     skipif: {conditions: *deps}, partial: {df: "${{ workflow.dmg_trend_ytop_all.return }}", column_name: ytop}}
   - name: Draw Damage Trend
     id: dmg_trend
     task: draw_chart
@@ -2099,7 +2537,7 @@ workflow:
         showlegend: true
         legend_title: Damage type
         xaxis: {title: Month}
-        yaxis: {title: Damage events}
+        yaxis: {title: Damage events, range: [0, "${{ workflow.dmg_trend_ytop.return }}"]}
     mapvalues:
       argnames: dataframe
       argvalues: ${{ workflow.dmg_trend_df.return }}
@@ -2188,6 +2626,23 @@ workflow:
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
+  - name: "Count Axis Top per View, Draw Crop Bar"
+    id: crop_bar_ytop_v
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      query: |
+        SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Species responsible" AS k, SUM("Incidents") AS t FROM df GROUP BY 1)
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.crop_by_crop.return }}
+  - {name: 'Count Axis Top, All Views, Draw Crop Bar', id: crop_bar_ytop_all, task: merge_df,
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.crop_bar_ytop_v.return }}"}}
+  - {name: 'Count Axis Top, Draw Crop Bar', id: crop_bar_ytop, task: dataframe_column_max,
+     skipif: {conditions: *deps}, partial: {df: "${{ workflow.crop_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Crop Bar
     id: crop_bar
     task: draw_chart
@@ -2209,7 +2664,7 @@ workflow:
         showlegend: true
         legend_title: Crop
         xaxis: {title: Species responsible}
-        yaxis: {title: Crop damage incidents}
+        yaxis: {title: Crop damage incidents, range: [0, "${{ workflow.crop_bar_ytop.return }}"]}
     mapvalues:
       argnames: dataframe
       argvalues: ${{ workflow.crop_by_crop.return }}
@@ -2290,6 +2745,23 @@ workflow:
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
+  - name: "Count Axis Top per View, Draw Damage Extent Bar"
+    id: dmg_extent_bar_ytop_v
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      query: |
+        SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Extent" AS k, SUM("Incidents") AS t FROM df GROUP BY 1)
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.dmg_extent.return }}
+  - {name: 'Count Axis Top, All Views, Draw Damage Extent Bar', id: dmg_extent_bar_ytop_all, task: merge_df,
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.dmg_extent_bar_ytop_v.return }}"}}
+  - {name: 'Count Axis Top, Draw Damage Extent Bar', id: dmg_extent_bar_ytop, task: dataframe_column_max,
+     skipif: {conditions: *deps}, partial: {df: "${{ workflow.dmg_extent_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Damage Extent Bar
     id: dmg_extent_bar
     task: draw_chart
@@ -2312,7 +2784,7 @@ workflow:
         showlegend: true
         legend_title: Damage type
         xaxis: {title: Extent of damage}
-        yaxis: {title: Crop damage incidents}
+        yaxis: {title: Crop damage incidents, range: [0, "${{ workflow.dmg_extent_bar_ytop.return }}"]}
     mapvalues:
       argnames: dataframe
       argvalues: ${{ workflow.dmg_extent.return }}
@@ -2348,6 +2820,23 @@ workflow:
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
+  - name: "Count Axis Top per View, Draw Tree Crop Bar"
+    id: tree_bar_ytop_v
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      query: |
+        SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Tree crop" AS k, MAX(SUM("Incidents"), SUM("Trees damaged")) AS t FROM df GROUP BY 1)
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.tree_by_type.return }}
+  - {name: 'Count Axis Top, All Views, Draw Tree Crop Bar', id: tree_bar_ytop_all, task: merge_df,
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.tree_bar_ytop_v.return }}"}}
+  - {name: 'Count Axis Top, Draw Tree Crop Bar', id: tree_bar_ytop, task: dataframe_column_max,
+     skipif: {conditions: *deps}, partial: {df: "${{ workflow.tree_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Tree Crop Bar
     id: tree_bar
     task: draw_bar_chart
@@ -2364,7 +2853,7 @@ workflow:
         showlegend: true
         legend_title: Measure
         xaxis: {title: Type of tree crop}
-        yaxis: {title: Count}
+        yaxis: {title: Count, range: [0, "${{ workflow.tree_bar_ytop.return }}"]}
     mapvalues:
       argnames: dataframe
       argvalues: ${{ workflow.tree_by_type.return }}
@@ -2437,6 +2926,23 @@ workflow:
   # gradient meaningless. The prefix is now invisible -- 0 to 3 zero-width
   # spaces (U+200B), fewer sorting first -- instead of the "1. ", "2. " that
   # showed in the legend; the crop extent axis (Fig. 17) does the same.
+  - name: "Count Axis Top per View, Draw Infrastructure Damage Bar"
+    id: infra_bar_ytop_v
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      query: |
+        SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Property" AS k, SUM("Incidents") AS t FROM df GROUP BY 1)
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.infra_by_type.return }}
+  - {name: 'Count Axis Top, All Views, Draw Infrastructure Damage Bar', id: infra_bar_ytop_all, task: merge_df,
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.infra_bar_ytop_v.return }}"}}
+  - {name: 'Count Axis Top, Draw Infrastructure Damage Bar', id: infra_bar_ytop, task: dataframe_column_max,
+     skipif: {conditions: *deps}, partial: {df: "${{ workflow.infra_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Infrastructure Damage Bar
     id: infra_bar
     task: draw_chart
@@ -2460,7 +2966,7 @@ workflow:
         showlegend: true
         legend_title: Extent of damage
         xaxis: {title: Type of property}
-        yaxis: {title: Infrastructure damage incidents}
+        yaxis: {title: Infrastructure damage incidents, range: [0, "${{ workflow.infra_bar_ytop.return }}"]}
     mapvalues:
       argnames: dataframe
       argvalues: ${{ workflow.infra_by_type.return }}
@@ -2476,56 +2982,85 @@ workflow:
 
   # 6 and 7 -- FIGS. 20 AND 21, one map each, as the MRD asks.
   #
-  # Review 0.2: "Figs 20 and 21: missing legends" and "Fig. 21: shows 5 points
-  # for 6 infrastructure events. Overlapping points? Please check."
+  # Review 0.3: "Figs 20 and 21: I think we should change to plain point
+  # maps, one point per report, coloured by extent of damage (crop acre bands
+  # / infrastructure low-high ramp, 'Not recorded' in grey). Drop the
+  # 'reports within ~100 m drawn as one larger point' sizing."
   #
-  # Checked in EarthRanger: two of the six reports (27 Sep and 26 Oct 2026,
-  # both High, both water pipes and tank) were filed about 10 m apart -- the
-  # same installation damaged twice -- so one dot sat exactly on the other.
-  # Reports within about 100 m of each other (coordinates rounded to 3
-  # decimal places) are now drawn as ONE larger point, its tooltip listing
-  # every report, so a repeat location is visible rather than hidden. Where
-  # the reports in a cell differ, the point takes the most severe extent.
-  #
-  # Both maps now colour by extent of damage and carry two legends: the
-  # extent (crop: pink ramp by acre band; infrastructure: the orange ramp of
-  # Fig. 19), and a point-size key carried by an invisible layer, exactly as
-  # on the predation map. Not recorded is grey.
+  # One row per report, one fixed point size, no size key. The colours are
+  # unchanged: crop the pink ramp by acre band, infrastructure the orange
+  # ramp of Fig. 19, Not recorded grey. Two reports at the same place (the 27
+  # Sep / 26 Oct water-pipe reports, ~10 m apart) draw one on top of the
+  # other again; hovering shows the top one.
+  - name: Crop Damage Map View
+    id: crop_map_view
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT lon, lat - (0.0 / 2.0) / ppd AS lat,
+               MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd
+        FROM (
+          SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,
+                 MIN(880.0 / (x1 - x0), (440.0 - 0.0) / (y1 - y0)) AS ppd
+          FROM (
+            SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,
+                   MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,
+                   MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,
+                   MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1
+            FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+          )
+        )
+      columns: null
+      sanitize: true
+  - {name: Crop Damage Map View Longitude, id: crop_map_lon, task: dataframe_column_max,
+     partial: {df: "${{ workflow.crop_map_view.return }}", column_name: lon}}
+  - {name: Crop Damage Map View Latitude, id: crop_map_lat, task: dataframe_column_max,
+     partial: {df: "${{ workflow.crop_map_view.return }}", column_name: lat}}
+  - {name: Crop Damage Map View Zoom, id: crop_map_zoom, task: dataframe_column_max,
+     partial: {df: "${{ workflow.crop_map_view.return }}", column_name: zoom}}
+  - name: Crop Damage Map Reports Outside the Map
+    id: crop_map_outside
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT printf('%d %s fall%s outside the map area, more than about 20 km beyond the conservancy boundary.',
+                      n, CASE WHEN n = 1 THEN 'report' ELSE 'reports' END, CASE WHEN n = 1 THEN 's' ELSE '' END) AS "Note"
+        FROM (
+          SELECT COUNT(*) AS n
+          FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x,
+                       CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y
+                FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w
+                      FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL))
+          WHERE x BETWEEN 33 AND 42 AND y BETWEEN -5 AND 5
+          AND NOT (x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+        )
+        WHERE n > 0
+      columns: null
+      sanitize: true
   - name: Crop Damage Points
     id: crop_points
     task: apply_sql_query
     partial:
       query: |
-        SELECT MIN(geometry) AS geometry,
-               COUNT(*) AS "Reports",
-               CASE WHEN COUNT(*) > 1 THEN 12 ELSE 7 END AS size_px,
-               CASE MAX(rk) WHEN 1 THEN '<1 acre' WHEN 2 THEN '1-5 acres' WHEN 3 THEN '5-10 acres'
-                      WHEN 4 THEN '>10 acres' ELSE 'Not recorded' END AS "Extent",
-               group_concat(item, ' | ') AS "Crop",
-               group_concat(sp, ' | ') AS "Species responsible",
-               group_concat(dt, ' | ') AS "Date"
+        SELECT geometry,
+               CASE WHEN ext IS NULL OR TRIM(ext) = '' THEN 'Not recorded'
+                    WHEN ext LIKE '%<%' THEN '<1 acre'
+                    WHEN ext LIKE '1%5%' THEN '1-5 acres'
+                    WHEN ext LIKE '5%10%' THEN '5-10 acres'
+                    WHEN ext LIKE '%>%' THEN '>10 acres'
+                    ELSE 'Not recorded' END AS "Extent",
+               item AS "Crop", sp AS "Species responsible", dt AS "Date"
         FROM (
-          SELECT geometry, sp, dt, item, CASE
-                     WHEN ext IS NULL OR TRIM(ext) = '' THEN 0
-                     WHEN ext LIKE '%<%' THEN 1
-                     WHEN ext LIKE '1%5%' THEN 2
-                     WHEN ext LIKE '5%10%' THEN 3
-                     WHEN ext LIKE '%>%' THEN 4
-                     ELSE 0 END AS rk,
-                 printf('%.3f %.3f', CAST(substr(wkt, 1, instr(wkt, ' ') - 1) AS REAL),
-                                     CAST(substr(wkt, instr(wkt, ' ') + 1) AS REAL)) AS cell
-          FROM (
-            SELECT geometry, species_h AS sp, substr(report_time, 1, 10) AS dt,
-                   json_extract(event_details, '$."Extent of damage"') AS ext,
-                   COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
-                     CAST(json_extract(event_details, '$."Type of crop"') AS TEXT),
-                     '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS item,
-                   TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS wkt
-            FROM df
-            WHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL
-          )
+          SELECT geometry, species_h AS sp, substr(report_time, 1, 10) AS dt,
+                 json_extract(event_details, '$."Extent of damage"') AS ext,
+                 COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
+                   CAST(json_extract(event_details, '$."Type of crop"') AS TEXT),
+                   '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS item
+          FROM df
+          WHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL
         )
-        GROUP BY cell
       columns: null
       sanitize: true
     mapvalues:
@@ -2543,55 +3078,23 @@ workflow:
       conditions: *geo
     partial:
       layer_style:
-        get_radius: size_px
+        get_radius: 7.0
         radius_units: pixels
-        radius_scale: 1.0
         fill_color_column: crop_color
         get_line_color: '#ffffff'
         stroked: true
         get_line_width: 1
         opacity: 0.9
       legend: {label_column: Extent, color_column: crop_color, title: Extent of damage}
-      tooltip_columns: [Reports, Crop, Extent, Species responsible, Date]
+      tooltip_columns: [Crop, Extent, Species responsible, Date]
     mapvalues:
       argnames: geodataframe
       argvalues: ${{ workflow.crop_cmap.return }}
-  - name: Crop Damage Size Key Point
-    id: crop_size_key_pt
-    task: apply_sql_query
-    partial:
-      df: ${{ workflow.events_indexed.return }}
-      query: |
-        SELECT geometry FROM df
-        WHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL
-        LIMIT 1
-      columns: null
-      sanitize: true
-  - name: Crop Damage Size Key
-    id: crop_size_key
-    task: create_point_layer
-    skipif:
-      conditions: *geo
-    partial:
-      geodataframe: ${{ workflow.crop_size_key_pt.return }}
-      layer_style:
-        get_radius: 0.0
-        radius_units: pixels
-        get_fill_color: '#525252'
-        stroked: false
-        opacity: 0.0
-      legend:
-        title: Point size
-        labels: ['Small point: one report', 'Large point: two or more reports within about 100 m']
-        colors: ['#525252', '#525252']
-      tooltip_columns: []
   - name: Crop Damage Map Layers
     id: crop_map_layers
     task: combine_map_layers
     partial:
-      static_layers:
-      - ${{ workflow.boundary_layer.return }}
-      - ${{ workflow.crop_size_key.return }}
+      static_layers: ${{ workflow.boundary_layer.return }}
     mapvalues:
       argnames: grouped_layers
       argvalues: ${{ workflow.crop_layer.return }}
@@ -2605,7 +3108,12 @@ workflow:
       north_arrow_style: {placement: top-left}
       legend_style: *map_legend
       max_zoom: 15
-      view_state: *conservancy_view
+      view_state:
+        longitude: ${{ workflow.crop_map_lon.return }}
+        latitude: ${{ workflow.crop_map_lat.return }}
+        zoom: ${{ workflow.crop_map_zoom.return }}
+        pitch: 0
+        bearing: 0
     mapvalues:
       argnames: geo_layers
       argvalues: ${{ workflow.crop_map_layers.return }}
@@ -2618,40 +3126,74 @@ workflow:
   - {name: Merge Crop Damage Map Views, id: crop_map_wm, task: merge_widget_views,
      partial: {widgets: "${{ workflow.crop_map_w.return }}"}}
 
+  - name: Infrastructure Damage Map View
+    id: infra_map_view
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT lon, lat - (0.0 / 2.0) / ppd AS lat,
+               MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd
+        FROM (
+          SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,
+                 MIN(880.0 / (x1 - x0), (440.0 - 0.0) / (y1 - y0)) AS ppd
+          FROM (
+            SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,
+                   MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,
+                   MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,
+                   MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1
+            FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+          )
+        )
+      columns: null
+      sanitize: true
+  - {name: Infrastructure Damage Map View Longitude, id: infra_map_lon, task: dataframe_column_max,
+     partial: {df: "${{ workflow.infra_map_view.return }}", column_name: lon}}
+  - {name: Infrastructure Damage Map View Latitude, id: infra_map_lat, task: dataframe_column_max,
+     partial: {df: "${{ workflow.infra_map_view.return }}", column_name: lat}}
+  - {name: Infrastructure Damage Map View Zoom, id: infra_map_zoom, task: dataframe_column_max,
+     partial: {df: "${{ workflow.infra_map_view.return }}", column_name: zoom}}
+  - name: Infrastructure Damage Map Reports Outside the Map
+    id: infra_map_outside
+    task: apply_sql_query
+    partial:
+      df: ${{ workflow.events_indexed.return }}
+      query: |
+        SELECT printf('%d %s fall%s outside the map area, more than about 20 km beyond the conservancy boundary.',
+                      n, CASE WHEN n = 1 THEN 'report' ELSE 'reports' END, CASE WHEN n = 1 THEN 's' ELSE '' END) AS "Note"
+        FROM (
+          SELECT COUNT(*) AS n
+          FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x,
+                       CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y
+                FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w
+                      FROM df WHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL))
+          WHERE x BETWEEN 33 AND 42 AND y BETWEEN -5 AND 5
+          AND NOT (x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)
+        )
+        WHERE n > 0
+      columns: null
+      sanitize: true
   - name: Infrastructure Damage Points
     id: infra_points
     task: apply_sql_query
     partial:
       query: |
-        SELECT MIN(geometry) AS geometry,
-               COUNT(*) AS "Reports",
-               CASE WHEN COUNT(*) > 1 THEN 12 ELSE 7 END AS size_px,
-               CASE MAX(rk) WHEN 1 THEN 'Low' WHEN 2 THEN 'Medium' WHEN 3 THEN 'High'
-                      ELSE 'Not recorded' END AS "Extent",
-               group_concat(item, ' | ') AS "Property",
-               group_concat(sp, ' | ') AS "Species responsible",
-               group_concat(dt, ' | ') AS "Date"
+        SELECT geometry,
+               CASE WHEN ext IS NULL OR TRIM(ext) = '' THEN 'Not recorded'
+                    WHEN LOWER(ext) LIKE 'low%' THEN 'Low'
+                    WHEN LOWER(ext) LIKE 'med%' THEN 'Medium'
+                    WHEN LOWER(ext) LIKE 'high%' THEN 'High'
+                    ELSE 'Not recorded' END AS "Extent",
+               item AS "Property", sp AS "Species responsible", dt AS "Date"
         FROM (
-          SELECT geometry, sp, dt, item, CASE
-                     WHEN ext IS NULL OR TRIM(ext) = '' THEN 0
-                     WHEN LOWER(ext) LIKE 'low%' THEN 1
-                     WHEN LOWER(ext) LIKE 'med%' THEN 2
-                     WHEN LOWER(ext) LIKE 'high%' THEN 3
-                     ELSE 0 END AS rk,
-                 printf('%.3f %.3f', CAST(substr(wkt, 1, instr(wkt, ' ') - 1) AS REAL),
-                                     CAST(substr(wkt, instr(wkt, ' ') + 1) AS REAL)) AS cell
-          FROM (
-            SELECT geometry, species_h AS sp, substr(report_time, 1, 10) AS dt,
-                   json_extract(event_details, '$."Extent of damage"') AS ext,
-                   COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
-                     CAST(json_extract(event_details, '$."Type of Property"') AS TEXT),
-                     '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS item,
-                   TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS wkt
-            FROM df
-            WHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL
-          )
+          SELECT geometry, species_h AS sp, substr(report_time, 1, 10) AS dt,
+                 json_extract(event_details, '$."Extent of damage"') AS ext,
+                 COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(
+                   CAST(json_extract(event_details, '$."Type of Property"') AS TEXT),
+                   '","', ', '), '["', ''), '"]', ''), '[]', '')), ''), 'Not recorded') AS item
+          FROM df
+          WHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL
         )
-        GROUP BY cell
       columns: null
       sanitize: true
     mapvalues:
@@ -2668,55 +3210,23 @@ workflow:
       conditions: *geo
     partial:
       layer_style:
-        get_radius: size_px
+        get_radius: 7.0
         radius_units: pixels
-        radius_scale: 1.0
         fill_color_column: infra_color
         get_line_color: '#ffffff'
         stroked: true
         get_line_width: 1
         opacity: 0.9
       legend: {label_column: Extent, color_column: infra_color, title: Extent of damage}
-      tooltip_columns: [Reports, Property, Extent, Species responsible, Date]
+      tooltip_columns: [Property, Extent, Species responsible, Date]
     mapvalues:
       argnames: geodataframe
       argvalues: ${{ workflow.infra_cmap.return }}
-  - name: Infrastructure Damage Size Key Point
-    id: infra_size_key_pt
-    task: apply_sql_query
-    partial:
-      df: ${{ workflow.events_indexed.return }}
-      query: |
-        SELECT geometry FROM df
-        WHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL
-        LIMIT 1
-      columns: null
-      sanitize: true
-  - name: Infrastructure Damage Size Key
-    id: infra_size_key
-    task: create_point_layer
-    skipif:
-      conditions: *geo
-    partial:
-      geodataframe: ${{ workflow.infra_size_key_pt.return }}
-      layer_style:
-        get_radius: 0.0
-        radius_units: pixels
-        get_fill_color: '#525252'
-        stroked: false
-        opacity: 0.0
-      legend:
-        title: Point size
-        labels: ['Small point: one report', 'Large point: two or more reports within about 100 m']
-        colors: ['#525252', '#525252']
-      tooltip_columns: []
   - name: Infrastructure Damage Map Layers
     id: infra_map_layers
     task: combine_map_layers
     partial:
-      static_layers:
-      - ${{ workflow.boundary_layer.return }}
-      - ${{ workflow.infra_size_key.return }}
+      static_layers: ${{ workflow.boundary_layer.return }}
     mapvalues:
       argnames: grouped_layers
       argvalues: ${{ workflow.infra_layer.return }}
@@ -2730,7 +3240,12 @@ workflow:
       north_arrow_style: {placement: top-left}
       legend_style: *map_legend
       max_zoom: 15
-      view_state: *conservancy_view
+      view_state:
+        longitude: ${{ workflow.infra_map_lon.return }}
+        latitude: ${{ workflow.infra_map_lat.return }}
+        zoom: ${{ workflow.infra_map_zoom.return }}
+        pitch: 0
+        bearing: 0
     mapvalues:
       argnames: geo_layers
       argvalues: ${{ workflow.infra_map_layers.return }}
@@ -2798,6 +3313,23 @@ workflow:
     mapvalues:
       argnames: df
       argvalues: ${{ workflow.events_grouped.return }}
+  - name: "Count Axis Top per View, Draw Retaliation Bar"
+    id: ret_bar_ytop_v
+    task: apply_sql_query
+    skipif:
+      conditions: *deps
+    partial:
+      query: |
+        SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Species responsible" AS k, MAX(SUM("Carried out"), SUM("Threatened")) AS t FROM df GROUP BY 1)
+      columns: null
+      sanitize: true
+    mapvalues:
+      argnames: df
+      argvalues: ${{ workflow.ret_by_species.return }}
+  - {name: 'Count Axis Top, All Views, Draw Retaliation Bar', id: ret_bar_ytop_all, task: merge_df,
+     skipif: {conditions: *deps, unpack_depth: 2}, partial: {iterables: "${{ workflow.ret_bar_ytop_v.return }}"}}
+  - {name: 'Count Axis Top, Draw Retaliation Bar', id: ret_bar_ytop, task: dataframe_column_max,
+     skipif: {conditions: *deps}, partial: {df: "${{ workflow.ret_bar_ytop_all.return }}", column_name: ytop}}
   - name: Draw Retaliation Bar
     id: ret_bar
     task: draw_bar_chart
@@ -2819,7 +3351,7 @@ workflow:
         showlegend: true
         legend_title: Retaliation
         xaxis: {title: Species responsible}
-        yaxis: {title: Conflict events}
+        yaxis: {title: Conflict events, range: [0, "${{ workflow.ret_bar_ytop.return }}"]}
     mapvalues:
       argnames: dataframe
       argvalues: ${{ workflow.ret_by_species.return }}
@@ -2943,6 +3475,7 @@ workflow:
       - {item_type: image, key: event_map, value: "${{ workflow.evt_map_html.return }}", width_inches: 6.0,
          screenshot_config: {wait_for_timeout: 10000, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
       # --- 3 Species responsible
+      - {item_type: table, key: event_map_outside, value: "${{ workflow.evt_map_outside.return }}"}
       - {item_type: image, key: species_bar, value: "${{ workflow.species_bar_html.return }}", width_inches: 6.0,
          screenshot_config: {wait_for_timeout: 0, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
       # --- 4 Incident storyboard
@@ -2961,12 +3494,14 @@ workflow:
       - {item_type: image, key: wildlife_map, value: "${{ workflow.wl_map_html.return }}", width_inches: 6.0,
          screenshot_config: {wait_for_timeout: 10000, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
       # --- 8 Livestock predation
+      - {item_type: table, key: wildlife_map_outside, value: "${{ workflow.wl_map_outside.return }}"}
       - {item_type: image, key: predation_bar, value: "${{ workflow.pred_bar_html.return }}", width_inches: 6.0,
          screenshot_config: {wait_for_timeout: 0, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
       - {item_type: image, key: predator_bar, value: "${{ workflow.pred_pred_html.return }}", width_inches: 6.0,
          screenshot_config: {wait_for_timeout: 0, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
       - {item_type: image, key: predation_map, value: "${{ workflow.pred_map_html.return }}", width_inches: 6.0,
          screenshot_config: {wait_for_timeout: 10000, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
+      - {item_type: table, key: predation_map_outside, value: "${{ workflow.pred_map_outside.return }}"}
       - {item_type: image, key: boma_pie, value: "${{ workflow.pred_where_html.return }}", width_inches: 6.0,
          screenshot_config: {wait_for_timeout: 0, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
       # --- 9 Crop / infrastructure damage, the MRD's seven outputs in the
@@ -2983,9 +3518,11 @@ workflow:
          screenshot_config: {wait_for_timeout: 0, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
       - {item_type: image, key: crop_map, value: "${{ workflow.crop_map_html.return }}", width_inches: 6.0,
          screenshot_config: {wait_for_timeout: 10000, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
+      - {item_type: table, key: crop_map_outside, value: "${{ workflow.crop_map_outside.return }}"}
       - {item_type: image, key: infra_map, value: "${{ workflow.infra_map_html.return }}", width_inches: 6.0,
          screenshot_config: {wait_for_timeout: 10000, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
       # --- 10 Retaliation
+      - {item_type: table, key: infra_map_outside, value: "${{ workflow.infra_map_outside.return }}"}
       - {item_type: image, key: retaliation_bar, value: "${{ workflow.ret_bar_html.return }}", width_inches: 6.0,
          screenshot_config: {wait_for_timeout: 0, max_concurrent_pages: 2, device_scale_factor: 1.0, timeout: 120000}}
       - {item_type: table, key: ret_kpis, value: "${{ workflow.ret_kpis.return }}", merge_groups: true}

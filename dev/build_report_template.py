@@ -222,6 +222,7 @@ def images(
     *,
     empty: str = "No records for this period.",
     note: str | None = None,
+    outside: str | None = None,
 ) -> None:
     """A GROUPED image item -- anything built from `events_grouped`.
 
@@ -261,6 +262,21 @@ def images(
         n = para(note, center=True, size=8, color=GREY)
         n.paragraph_format.space_before = Pt(0)
         n.paragraph_format.space_after = Pt(10)
+    # Review 0.3: "add a note under the map for any points beyond it ('N
+    # reports fall outside the map area')". `outside` is a one-row table item
+    # holding the sentence, or no rows when every report is on the map.
+    if outside:
+        para(f"{{%p if {outside} is not string and {outside}.tbl_contents %}}")
+        o = para(
+            f"{{{{ {outside}.tbl_contents[0].cols[0]|e }}}}",
+            center=True,
+            italic=True,
+            size=8,
+            color=GREY,
+        )
+        o.paragraph_format.space_before = Pt(0)
+        o.paragraph_format.space_after = Pt(10)
+        para("{%p endif %}")
 
 
 def single_image(key: str, title: str) -> None:
@@ -361,6 +377,13 @@ about(
     "happened, and where. A conflict type keeps the same colour in every chart "
     "and on every map in this report."
 )
+# Review 0.3: map extents from each map's own data.
+about(
+    "Each map shows the whole conservancy and every report within about 20 km "
+    "of it, with a margin of about 2 km. Reports further away are counted in "
+    "a note under the map. Reports with no location, or at an impossible one "
+    "(0,0 or outside East Africa), are left off the maps and out of that note."
+)
 images("ctype_bar", "Conflict events by type")
 images("conflict_trend", "Conflict events per month by type")
 # Review 0.2: "only render the incident map when the period contains at least
@@ -377,7 +400,12 @@ images(
         "reports, it is mapped at the location of the earliest one."
     ),
 )
-images("event_map", "Conflict events", note="Each point is one conflict report.")
+images(
+    "event_map",
+    "Conflict events",
+    note="Each point is one conflict report.",
+    outside="event_map_outside",
+)
 
 # ---------------------------------------------------------------- 3. species
 doc.add_heading("3. Species responsible", level=1)
@@ -416,7 +444,11 @@ about(
 )
 images("wildlife_bar", "Wildlife killed and injured by species")
 images("wildlife_cause_bar", "Cause of wildlife death or injury")
-images("wildlife_map", "Wildlife killed or injured in conflict")
+images(
+    "wildlife_map",
+    "Wildlife killed or injured in conflict",
+    outside="wildlife_map_outside",
+)
 
 # ---------------------------------------------------------------- 7. predation
 doc.add_heading("7. Livestock predation", level=1)
@@ -431,7 +463,11 @@ images("predator_bar", "Predators responsible, by livestock killed")
 images(
     "predation_map",
     "Predation events, point size reflects number of livestock killed",
-    note="Colour shows the predator. Sizes: small 0 or 1 killed, medium 2 to 4, large 5 or more.",
+    note=(
+        "Colour shows the predator. Point size shows livestock killed, as in "
+        "the key along the bottom of the map: 0 or 1, 2 to 4, 5 or more."
+    ),
+    outside="predation_map_outside",
 )
 images("boma_pie", "Where attacks happened")
 
@@ -458,12 +494,20 @@ images("infra_bar", "Infrastructure damage by property type and damage extent")
 images(
     "crop_map",
     "Crop damage locations",
-    note="Colour shows the extent of damage. Reports within about 100 m of each other are drawn as one larger point.",
+    note=(
+        "Each point is one report, coloured by the extent of damage. Reports "
+        "made at the same place overlap."
+    ),
+    outside="crop_map_outside",
 )
 images(
     "infra_map",
     "Infrastructure damage locations",
-    note="Colour shows the extent of damage. Reports within about 100 m of each other are drawn as one larger point.",
+    note=(
+        "Each point is one report, coloured by the extent of damage. Reports "
+        "made at the same place overlap."
+    ),
+    outside="infra_map_outside",
 )
 
 # ---------------------------------------------------------------- 9. retaliation

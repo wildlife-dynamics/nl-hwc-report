@@ -3,6 +3,9 @@ import os
 from typing import Any
 
 from ecoscope.platform.tasks.analysis import (
+    dataframe_column_max as dataframe_column_max,
+)
+from ecoscope.platform.tasks.analysis import (
     dataframe_column_sum as dataframe_column_sum,
 )
 from ecoscope.platform.tasks.config import set_string_var as set_string_var
@@ -11,6 +14,7 @@ from ecoscope.platform.tasks.filter import (
     get_timezone_from_time_range as get_timezone_from_time_range,
 )
 from ecoscope.platform.tasks.filter import set_time_range as set_time_range
+from ecoscope.platform.tasks.groupby import merge_df as merge_df
 from ecoscope.platform.tasks.groupby import set_groupers as set_groupers
 from ecoscope.platform.tasks.groupby import split_groups as split_groups
 from ecoscope.platform.tasks.io import get_events as get_events
@@ -37,6 +41,7 @@ from ecoscope.platform.tasks.results import (
 from ecoscope.platform.tasks.results import (
     create_table_widget_single_view as create_table_widget_single_view,
 )
+from ecoscope.platform.tasks.results import create_text_layer as create_text_layer
 from ecoscope.platform.tasks.results import draw_bar_chart as draw_bar_chart
 from ecoscope.platform.tasks.results import draw_chart as draw_chart
 from ecoscope.platform.tasks.results import draw_ecomap as draw_ecomap
@@ -1164,6 +1169,65 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
+    trend_chart_ytop_v = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("trend_chart_ytop_v")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            query='SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Month" AS k, SUM("Incidents") AS t FROM df GROUP BY 1)\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("trend_chart_ytop_v") or {}),
+        )
+        .mapvalues(argnames=["df"], argvalues=trend_df)
+    )
+
+    trend_chart_ytop_all = (
+        task(merge_df)
+        .validate()
+        .set_task_instance_id("trend_chart_ytop_all")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=2,
+        )
+        .partial(
+            iterables=trend_chart_ytop_v, **(params.get("trend_chart_ytop_all") or {})
+        )
+        .call()
+    )
+
+    trend_chart_ytop = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("trend_chart_ytop")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=trend_chart_ytop_all,
+            column_name="ytop",
+            **(params.get("trend_chart_ytop") or {}),
+        )
+        .call()
+    )
+
     trend_chart = (
         task(draw_chart)
         .validate()
@@ -1209,7 +1273,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "showlegend": True,
                 "legend_title": "Conflict type",
                 "xaxis": {"title": "Month"},
-                "yaxis": {"title": "Conflict events"},
+                "yaxis": {"title": "Conflict events", "range": [0, trend_chart_ytop]},
             },
             **(params.get("trend_chart") or {}),
         )
@@ -1294,6 +1358,65 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
+    species_bar_ytop_v = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("species_bar_ytop_v")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            query='SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Species responsible" AS k, SUM("Events") AS t FROM df GROUP BY 1)\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("species_bar_ytop_v") or {}),
+        )
+        .mapvalues(argnames=["df"], argvalues=species_x)
+    )
+
+    species_bar_ytop_all = (
+        task(merge_df)
+        .validate()
+        .set_task_instance_id("species_bar_ytop_all")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=2,
+        )
+        .partial(
+            iterables=species_bar_ytop_v, **(params.get("species_bar_ytop_all") or {})
+        )
+        .call()
+    )
+
+    species_bar_ytop = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("species_bar_ytop")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=species_bar_ytop_all,
+            column_name="ytop",
+            **(params.get("species_bar_ytop") or {}),
+        )
+        .call()
+    )
+
     species_bar = (
         task(draw_chart)
         .validate()
@@ -1330,7 +1453,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "showlegend": True,
                 "legend_title": "Conflict type",
                 "xaxis": {"title": "Species responsible"},
-                "yaxis": {"title": "Conflict events"},
+                "yaxis": {"title": "Conflict events", "range": [0, species_bar_ytop]},
             },
             **(params.get("species_bar") or {}),
         )
@@ -1578,6 +1701,109 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .call()
     )
 
+    evt_map_view = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("evt_map_view")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query="SELECT lon, lat - (0.0 / 2.0) / ppd AS lat,\n       MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd\nFROM (\n  SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,\n         MIN(880.0 / (x1 - x0), (440.0 - 0.0) / (y1 - y0)) AS ppd\n  FROM (\n    SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,\n           MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,\n           MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,\n           MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1\n    FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE is_conflict = 1 AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n  )\n)\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("evt_map_view") or {}),
+        )
+        .call()
+    )
+
+    evt_map_lon = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("evt_map_lon")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=evt_map_view, column_name="lon", **(params.get("evt_map_lon") or {})
+        )
+        .call()
+    )
+
+    evt_map_lat = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("evt_map_lat")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=evt_map_view, column_name="lat", **(params.get("evt_map_lat") or {})
+        )
+        .call()
+    )
+
+    evt_map_zoom = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("evt_map_zoom")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=evt_map_view, column_name="zoom", **(params.get("evt_map_zoom") or {})
+        )
+        .call()
+    )
+
+    evt_map_outside = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("evt_map_outside")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query="SELECT printf('%d %s fall%s outside the map area, more than about 20 km beyond the conservancy boundary.',\n              n, CASE WHEN n = 1 THEN 'report' ELSE 'reports' END, CASE WHEN n = 1 THEN 's' ELSE '' END) AS \"Note\"\nFROM (\n  SELECT COUNT(*) AS n\n  FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x,\n               CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y\n        FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w\n              FROM df WHERE is_conflict = 1 AND geometry IS NOT NULL))\n  WHERE x BETWEEN 33 AND 42 AND y BETWEEN -5 AND 5\n  AND NOT (x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n)\nWHERE n > 0\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("evt_map_outside") or {}),
+        )
+        .call()
+    )
+
     evt_points = (
         task(apply_sql_query)
         .validate()
@@ -1700,9 +1926,9 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             legend_style={"placement": "top-right", "title": "Legend"},
             max_zoom=15,
             view_state={
-                "longitude": 36.98,
-                "latitude": 0.53,
-                "zoom": 10.0,
+                "longitude": evt_map_lon,
+                "latitude": evt_map_lat,
+                "zoom": evt_map_zoom,
                 "pitch": 0,
                 "bearing": 0,
             },
@@ -1787,6 +2013,63 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
+    cas_bar_ytop_v = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("cas_bar_ytop_v")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            query='SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Species responsible" AS k, SUM("People") AS t FROM df GROUP BY 1)\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("cas_bar_ytop_v") or {}),
+        )
+        .mapvalues(argnames=["df"], argvalues=cas_by_species)
+    )
+
+    cas_bar_ytop_all = (
+        task(merge_df)
+        .validate()
+        .set_task_instance_id("cas_bar_ytop_all")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=2,
+        )
+        .partial(iterables=cas_bar_ytop_v, **(params.get("cas_bar_ytop_all") or {}))
+        .call()
+    )
+
+    cas_bar_ytop = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("cas_bar_ytop")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=cas_bar_ytop_all,
+            column_name="ytop",
+            **(params.get("cas_bar_ytop") or {}),
+        )
+        .call()
+    )
+
     cas_bar = (
         task(draw_chart)
         .validate()
@@ -1823,7 +2106,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "showlegend": True,
                 "legend_title": "Outcome",
                 "xaxis": {"title": "Species responsible"},
-                "yaxis": {"title": "People injured or killed"},
+                "yaxis": {
+                    "title": "People injured or killed",
+                    "range": [0, cas_bar_ytop],
+                },
             },
             **(params.get("cas_bar") or {}),
         )
@@ -2011,6 +2297,61 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
+    wl_bar_ytop_v = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("wl_bar_ytop_v")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            query='SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Species" AS k, SUM("Animals") AS t FROM df GROUP BY 1)\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("wl_bar_ytop_v") or {}),
+        )
+        .mapvalues(argnames=["df"], argvalues=wl_by_species)
+    )
+
+    wl_bar_ytop_all = (
+        task(merge_df)
+        .validate()
+        .set_task_instance_id("wl_bar_ytop_all")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=2,
+        )
+        .partial(iterables=wl_bar_ytop_v, **(params.get("wl_bar_ytop_all") or {}))
+        .call()
+    )
+
+    wl_bar_ytop = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("wl_bar_ytop")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=wl_bar_ytop_all, column_name="ytop", **(params.get("wl_bar_ytop") or {})
+        )
+        .call()
+    )
+
     wl_bar = (
         task(draw_chart)
         .validate()
@@ -2047,7 +2388,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "showlegend": True,
                 "legend_title": "Outcome",
                 "xaxis": {"title": "Species"},
-                "yaxis": {"title": "Animals killed or injured"},
+                "yaxis": {
+                    "title": "Animals killed or injured",
+                    "range": [0, wl_bar_ytop],
+                },
             },
             **(params.get("wl_bar") or {}),
         )
@@ -2243,6 +2587,105 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .call()
     )
 
+    wl_map_view = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("wl_map_view")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query="SELECT lon, lat - (0.0 / 2.0) / ppd AS lat,\n       MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd\nFROM (\n  SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,\n         MIN(880.0 / (x1 - x0), (440.0 - 0.0) / (y1 - y0)) AS ppd\n  FROM (\n    SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,\n           MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,\n           MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,\n           MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1\n    FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE is_conflict = 1 AND event_type IN ('animal_carcass', 'sick_injured_animal') AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n  )\n)\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("wl_map_view") or {}),
+        )
+        .call()
+    )
+
+    wl_map_lon = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("wl_map_lon")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(df=wl_map_view, column_name="lon", **(params.get("wl_map_lon") or {}))
+        .call()
+    )
+
+    wl_map_lat = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("wl_map_lat")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(df=wl_map_view, column_name="lat", **(params.get("wl_map_lat") or {}))
+        .call()
+    )
+
+    wl_map_zoom = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("wl_map_zoom")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=wl_map_view, column_name="zoom", **(params.get("wl_map_zoom") or {})
+        )
+        .call()
+    )
+
+    wl_map_outside = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("wl_map_outside")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query="SELECT printf('%d %s fall%s outside the map area, more than about 20 km beyond the conservancy boundary.',\n              n, CASE WHEN n = 1 THEN 'report' ELSE 'reports' END, CASE WHEN n = 1 THEN 's' ELSE '' END) AS \"Note\"\nFROM (\n  SELECT COUNT(*) AS n\n  FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x,\n               CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y\n        FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w\n              FROM df WHERE is_conflict = 1 AND event_type IN ('animal_carcass', 'sick_injured_animal') AND geometry IS NOT NULL))\n  WHERE x BETWEEN 33 AND 42 AND y BETWEEN -5 AND 5\n  AND NOT (x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n)\nWHERE n > 0\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("wl_map_outside") or {}),
+        )
+        .call()
+    )
+
     wl_points = (
         task(apply_sql_query)
         .validate()
@@ -2356,9 +2799,9 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             legend_style={"placement": "top-right", "title": "Legend"},
             max_zoom=15,
             view_state={
-                "longitude": 36.98,
-                "latitude": 0.53,
-                "zoom": 10.0,
+                "longitude": wl_map_lon,
+                "latitude": wl_map_lat,
+                "zoom": wl_map_zoom,
                 "pitch": 0,
                 "bearing": 0,
             },
@@ -2443,6 +2886,63 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
+    pred_bar_ytop_v = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("pred_bar_ytop_v")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            query='SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Livestock species" AS k, SUM("Animals") AS t FROM df GROUP BY 1)\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("pred_bar_ytop_v") or {}),
+        )
+        .mapvalues(argnames=["df"], argvalues=pred_by_species)
+    )
+
+    pred_bar_ytop_all = (
+        task(merge_df)
+        .validate()
+        .set_task_instance_id("pred_bar_ytop_all")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=2,
+        )
+        .partial(iterables=pred_bar_ytop_v, **(params.get("pred_bar_ytop_all") or {}))
+        .call()
+    )
+
+    pred_bar_ytop = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("pred_bar_ytop")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=pred_bar_ytop_all,
+            column_name="ytop",
+            **(params.get("pred_bar_ytop") or {}),
+        )
+        .call()
+    )
+
     pred_bar = (
         task(draw_chart)
         .validate()
@@ -2479,7 +2979,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "showlegend": True,
                 "legend_title": "Outcome",
                 "xaxis": {"title": "Livestock species"},
-                "yaxis": {"title": "Animals killed or injured"},
+                "yaxis": {
+                    "title": "Animals killed or injured",
+                    "range": [0, pred_bar_ytop],
+                },
             },
             **(params.get("pred_bar") or {}),
         )
@@ -2565,6 +3068,66 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
+    pred_pred_bar_ytop_v = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("pred_pred_bar_ytop_v")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            query='SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Predator" AS k, SUM("Livestock killed") AS t FROM df GROUP BY 1)\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("pred_pred_bar_ytop_v") or {}),
+        )
+        .mapvalues(argnames=["df"], argvalues=pred_predators)
+    )
+
+    pred_pred_bar_ytop_all = (
+        task(merge_df)
+        .validate()
+        .set_task_instance_id("pred_pred_bar_ytop_all")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=2,
+        )
+        .partial(
+            iterables=pred_pred_bar_ytop_v,
+            **(params.get("pred_pred_bar_ytop_all") or {}),
+        )
+        .call()
+    )
+
+    pred_pred_bar_ytop = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("pred_pred_bar_ytop")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=pred_pred_bar_ytop_all,
+            column_name="ytop",
+            **(params.get("pred_pred_bar_ytop") or {}),
+        )
+        .call()
+    )
+
     pred_pred_bar = (
         task(draw_chart)
         .validate()
@@ -2610,7 +3173,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "showlegend": True,
                 "legend_title": "Livestock killed",
                 "xaxis": {"title": "Predator species"},
-                "yaxis": {"title": "Livestock killed"},
+                "yaxis": {
+                    "title": "Livestock killed",
+                    "range": [0, pred_pred_bar_ytop],
+                },
             },
             **(params.get("pred_pred_bar") or {}),
         )
@@ -2801,6 +3367,109 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .call()
     )
 
+    pred_map_view = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("pred_map_view")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query="SELECT lon, lat - (80.0 / 2.0) / ppd AS lat,\n       MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd\nFROM (\n  SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,\n         MIN(880.0 / (x1 - x0), (440.0 - 80.0) / (y1 - y0)) AS ppd\n  FROM (\n    SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,\n           MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,\n           MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,\n           MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1\n    FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n  )\n)\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("pred_map_view") or {}),
+        )
+        .call()
+    )
+
+    pred_map_lon = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("pred_map_lon")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=pred_map_view, column_name="lon", **(params.get("pred_map_lon") or {})
+        )
+        .call()
+    )
+
+    pred_map_lat = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("pred_map_lat")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=pred_map_view, column_name="lat", **(params.get("pred_map_lat") or {})
+        )
+        .call()
+    )
+
+    pred_map_zoom = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("pred_map_zoom")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=pred_map_view, column_name="zoom", **(params.get("pred_map_zoom") or {})
+        )
+        .call()
+    )
+
+    pred_map_outside = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("pred_map_outside")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query="SELECT printf('%d %s fall%s outside the map area, more than about 20 km beyond the conservancy boundary.',\n              n, CASE WHEN n = 1 THEN 'report' ELSE 'reports' END, CASE WHEN n = 1 THEN 's' ELSE '' END) AS \"Note\"\nFROM (\n  SELECT COUNT(*) AS n\n  FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x,\n               CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y\n        FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w\n              FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL))\n  WHERE x BETWEEN 33 AND 42 AND y BETWEEN -5 AND 5\n  AND NOT (x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n)\nWHERE n > 0\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("pred_map_outside") or {}),
+        )
+        .call()
+    )
+
     pred_points = (
         task(apply_sql_query)
         .validate()
@@ -2894,10 +3563,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["geodataframe"], argvalues=pred_cmap)
     )
 
-    pred_size_key_pt = (
+    pred_key_box = (
         task(apply_sql_query)
         .validate()
-        .set_task_instance_id("pred_size_key_pt")
+        .set_task_instance_id("pred_key_box")
         .handle_errors()
         .with_tracing()
         .skipif(
@@ -2909,48 +3578,149 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         )
         .partial(
             df=events_indexed,
-            query="SELECT geometry FROM df\nWHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL\nLIMIT 1\n",
+            query="SELECT printf('POLYGON ((%.6f %.6f, %.6f %.6f, %.6f %.6f, %.6f %.6f, %.6f %.6f))',\n              lon + -242.0 / ppd, lat + -212.0 / ppd, lon + 292.0 / ppd, lat + -212.0 / ppd,\n              lon + 292.0 / ppd, lat + -148.0 / ppd, lon + -242.0 / ppd, lat + -148.0 / ppd,\n              lon + -242.0 / ppd, lat + -212.0 / ppd) AS geometry\nFROM (\n  SELECT lon, lat - (80.0 / 2.0) / ppd AS lat,\n         MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd\n  FROM (\n    SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,\n           MIN(880.0 / (x1 - x0), (440.0 - 80.0) / (y1 - y0)) AS ppd\n    FROM (\n      SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,\n             MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,\n             MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,\n             MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1\n      FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n    )\n  )\n)\n",
             columns=None,
             sanitize=True,
-            **(params.get("pred_size_key_pt") or {}),
+            **(params.get("pred_key_box") or {}),
         )
         .call()
     )
 
-    pred_size_key = (
-        task(create_point_layer)
+    pred_key_pts = (
+        task(apply_sql_query)
         .validate()
-        .set_task_instance_id("pred_size_key")
+        .set_task_instance_id("pred_key_pts")
         .handle_errors()
         .with_tracing()
         .skipif(
             conditions=[
                 any_is_empty_df,
                 any_dependency_skipped,
-                all_geometry_are_none,
             ],
             unpack_depth=1,
         )
         .partial(
-            geodataframe=pred_size_key_pt,
+            df=events_indexed,
+            query="SELECT printf('POINT (%.6f %.6f)', v.lon + k.dx / v.ppd, v.lat + (-180.0) / v.ppd) AS geometry,\n       k.size_px AS size_px\nFROM (SELECT -40 AS dx, 6 AS size_px UNION ALL SELECT 70 AS dx, 11 AS size_px UNION ALL SELECT 195 AS dx, 17 AS size_px) k\nCROSS JOIN (\n  SELECT lon, lat - (80.0 / 2.0) / ppd AS lat,\n         MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd\n  FROM (\n    SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,\n           MIN(880.0 / (x1 - x0), (440.0 - 80.0) / (y1 - y0)) AS ppd\n    FROM (\n      SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,\n             MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,\n             MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,\n             MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1\n      FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n    )\n  )\n) v\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("pred_key_pts") or {}),
+        )
+        .call()
+    )
+
+    pred_key_lbl = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("pred_key_lbl")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query="SELECT printf('POINT (%.6f %.6f)', v.lon + k.dx / v.ppd, v.lat + (-180.0) / v.ppd) AS geometry,\n       k.label AS label\nFROM (SELECT -232 AS dx, 'Livestock killed:' AS label UNION ALL SELECT -28 AS dx, '0 or 1' AS label UNION ALL SELECT 87 AS dx, '2 to 4' AS label UNION ALL SELECT 218 AS dx, '5 or more' AS label) k\nCROSS JOIN (\n  SELECT lon, lat - (80.0 / 2.0) / ppd AS lat,\n         MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd\n  FROM (\n    SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,\n           MIN(880.0 / (x1 - x0), (440.0 - 80.0) / (y1 - y0)) AS ppd\n    FROM (\n      SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,\n             MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,\n             MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,\n             MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1\n      FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE event_type = 'hwc_livestock_predation' AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n    )\n  )\n) v\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("pred_key_lbl") or {}),
+        )
+        .call()
+    )
+
+    pred_key_box_layer = (
+        task(create_polygon_layer)
+        .validate()
+        .set_task_instance_id("pred_key_box_layer")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            geodataframe=pred_key_box,
             layer_style={
-                "get_radius": 0.0,
-                "radius_units": "pixels",
-                "get_fill_color": "#525252",
-                "stroked": False,
-                "opacity": 0.0,
+                "get_fill_color": "#ffffff",
+                "get_line_color": "#9e9e9e",
+                "get_line_width": 1,
+                "stroked": True,
+                "opacity": 0.9,
+                "pickable": False,
             },
-            legend={
-                "title": "Livestock killed (point size)",
-                "labels": [
-                    "Small point: 0 or 1",
-                    "Medium point: 2 to 4",
-                    "Large point: 5 or more",
-                ],
-                "colors": ["#525252", "#525252", "#525252"],
-            },
+            legend=None,
             tooltip_columns=[],
-            **(params.get("pred_size_key") or {}),
+            **(params.get("pred_key_box_layer") or {}),
+        )
+        .call()
+    )
+
+    pred_key_pts_layer = (
+        task(create_point_layer)
+        .validate()
+        .set_task_instance_id("pred_key_pts_layer")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            geodataframe=pred_key_pts,
+            layer_style={
+                "get_radius": "size_px",
+                "radius_units": "pixels",
+                "radius_scale": 1.0,
+                "get_fill_color": "#737373",
+                "get_line_color": "#ffffff",
+                "stroked": True,
+                "get_line_width": 1,
+                "opacity": 0.85,
+                "pickable": False,
+            },
+            legend=None,
+            tooltip_columns=[],
+            **(params.get("pred_key_pts_layer") or {}),
+        )
+        .call()
+    )
+
+    pred_key_lbl_layer = (
+        task(create_text_layer)
+        .validate()
+        .set_task_instance_id("pred_key_lbl_layer")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            geodataframe=pred_key_lbl,
+            layer_style={
+                "get_text": "label",
+                "get_color": [33, 33, 33, 255],
+                "font_family": "Helvetica, Arial, sans-serif",
+                "font_weight": "bold",
+                "get_size": 12,
+                "get_text_anchor": "start",
+                "get_alignment_baseline": "center",
+                "pickable": False,
+            },
+            **(params.get("pred_key_lbl_layer") or {}),
         )
         .call()
     )
@@ -2969,7 +3739,12 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            static_layers=[boundary_layer, pred_size_key],
+            static_layers=[
+                boundary_layer,
+                pred_key_box_layer,
+                pred_key_pts_layer,
+                pred_key_lbl_layer,
+            ],
             **(params.get("pred_map_layers") or {}),
         )
         .mapvalues(argnames=["grouped_layers"], argvalues=pred_layer)
@@ -2996,9 +3771,9 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             legend_style={"placement": "top-right", "title": "Legend"},
             max_zoom=15,
             view_state={
-                "longitude": 36.98,
-                "latitude": 0.53,
-                "zoom": 10.0,
+                "longitude": pred_map_lon,
+                "latitude": pred_map_lat,
+                "zoom": pred_map_zoom,
                 "pitch": 0,
                 "bearing": 0,
             },
@@ -3083,6 +3858,63 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
+    dmg_trend_ytop_v = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("dmg_trend_ytop_v")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            query='SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Month" AS k, SUM("Events") AS t FROM df GROUP BY 1)\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("dmg_trend_ytop_v") or {}),
+        )
+        .mapvalues(argnames=["df"], argvalues=dmg_trend_df)
+    )
+
+    dmg_trend_ytop_all = (
+        task(merge_df)
+        .validate()
+        .set_task_instance_id("dmg_trend_ytop_all")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=2,
+        )
+        .partial(iterables=dmg_trend_ytop_v, **(params.get("dmg_trend_ytop_all") or {}))
+        .call()
+    )
+
+    dmg_trend_ytop = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("dmg_trend_ytop")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=dmg_trend_ytop_all,
+            column_name="ytop",
+            **(params.get("dmg_trend_ytop") or {}),
+        )
+        .call()
+    )
+
     dmg_trend = (
         task(draw_chart)
         .validate()
@@ -3119,7 +3951,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "showlegend": True,
                 "legend_title": "Damage type",
                 "xaxis": {"title": "Month"},
-                "yaxis": {"title": "Damage events"},
+                "yaxis": {"title": "Damage events", "range": [0, dmg_trend_ytop]},
             },
             **(params.get("dmg_trend") or {}),
         )
@@ -3205,6 +4037,63 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
+    crop_bar_ytop_v = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("crop_bar_ytop_v")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            query='SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Species responsible" AS k, SUM("Incidents") AS t FROM df GROUP BY 1)\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("crop_bar_ytop_v") or {}),
+        )
+        .mapvalues(argnames=["df"], argvalues=crop_by_crop)
+    )
+
+    crop_bar_ytop_all = (
+        task(merge_df)
+        .validate()
+        .set_task_instance_id("crop_bar_ytop_all")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=2,
+        )
+        .partial(iterables=crop_bar_ytop_v, **(params.get("crop_bar_ytop_all") or {}))
+        .call()
+    )
+
+    crop_bar_ytop = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("crop_bar_ytop")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=crop_bar_ytop_all,
+            column_name="ytop",
+            **(params.get("crop_bar_ytop") or {}),
+        )
+        .call()
+    )
+
     crop_bar = (
         task(draw_chart)
         .validate()
@@ -3254,7 +4143,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "showlegend": True,
                 "legend_title": "Crop",
                 "xaxis": {"title": "Species responsible"},
-                "yaxis": {"title": "Crop damage incidents"},
+                "yaxis": {
+                    "title": "Crop damage incidents",
+                    "range": [0, crop_bar_ytop],
+                },
             },
             **(params.get("crop_bar") or {}),
         )
@@ -3340,6 +4232,66 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
+    dmg_extent_bar_ytop_v = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("dmg_extent_bar_ytop_v")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            query='SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Extent" AS k, SUM("Incidents") AS t FROM df GROUP BY 1)\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("dmg_extent_bar_ytop_v") or {}),
+        )
+        .mapvalues(argnames=["df"], argvalues=dmg_extent)
+    )
+
+    dmg_extent_bar_ytop_all = (
+        task(merge_df)
+        .validate()
+        .set_task_instance_id("dmg_extent_bar_ytop_all")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=2,
+        )
+        .partial(
+            iterables=dmg_extent_bar_ytop_v,
+            **(params.get("dmg_extent_bar_ytop_all") or {}),
+        )
+        .call()
+    )
+
+    dmg_extent_bar_ytop = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("dmg_extent_bar_ytop")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=dmg_extent_bar_ytop_all,
+            column_name="ytop",
+            **(params.get("dmg_extent_bar_ytop") or {}),
+        )
+        .call()
+    )
+
     dmg_extent_bar = (
         task(draw_chart)
         .validate()
@@ -3376,7 +4328,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "showlegend": True,
                 "legend_title": "Damage type",
                 "xaxis": {"title": "Extent of damage"},
-                "yaxis": {"title": "Crop damage incidents"},
+                "yaxis": {
+                    "title": "Crop damage incidents",
+                    "range": [0, dmg_extent_bar_ytop],
+                },
             },
             **(params.get("dmg_extent_bar") or {}),
         )
@@ -3462,6 +4417,63 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
+    tree_bar_ytop_v = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("tree_bar_ytop_v")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            query='SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Tree crop" AS k, MAX(SUM("Incidents"), SUM("Trees damaged")) AS t FROM df GROUP BY 1)\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("tree_bar_ytop_v") or {}),
+        )
+        .mapvalues(argnames=["df"], argvalues=tree_by_type)
+    )
+
+    tree_bar_ytop_all = (
+        task(merge_df)
+        .validate()
+        .set_task_instance_id("tree_bar_ytop_all")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=2,
+        )
+        .partial(iterables=tree_bar_ytop_v, **(params.get("tree_bar_ytop_all") or {}))
+        .call()
+    )
+
+    tree_bar_ytop = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("tree_bar_ytop")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=tree_bar_ytop_all,
+            column_name="ytop",
+            **(params.get("tree_bar_ytop") or {}),
+        )
+        .call()
+    )
+
     tree_bar = (
         task(draw_bar_chart)
         .validate()
@@ -3497,7 +4509,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "showlegend": True,
                 "legend_title": "Measure",
                 "xaxis": {"title": "Type of tree crop"},
-                "yaxis": {"title": "Count"},
+                "yaxis": {"title": "Count", "range": [0, tree_bar_ytop]},
             },
             **(params.get("tree_bar") or {}),
         )
@@ -3582,6 +4594,63 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
+    infra_bar_ytop_v = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("infra_bar_ytop_v")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            query='SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Property" AS k, SUM("Incidents") AS t FROM df GROUP BY 1)\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("infra_bar_ytop_v") or {}),
+        )
+        .mapvalues(argnames=["df"], argvalues=infra_by_type)
+    )
+
+    infra_bar_ytop_all = (
+        task(merge_df)
+        .validate()
+        .set_task_instance_id("infra_bar_ytop_all")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=2,
+        )
+        .partial(iterables=infra_bar_ytop_v, **(params.get("infra_bar_ytop_all") or {}))
+        .call()
+    )
+
+    infra_bar_ytop = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("infra_bar_ytop")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=infra_bar_ytop_all,
+            column_name="ytop",
+            **(params.get("infra_bar_ytop") or {}),
+        )
+        .call()
+    )
+
     infra_bar = (
         task(draw_chart)
         .validate()
@@ -3618,7 +4687,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "showlegend": True,
                 "legend_title": "Extent of damage",
                 "xaxis": {"title": "Type of property"},
-                "yaxis": {"title": "Infrastructure damage incidents"},
+                "yaxis": {
+                    "title": "Infrastructure damage incidents",
+                    "range": [0, infra_bar_ytop],
+                },
             },
             **(params.get("infra_bar") or {}),
         )
@@ -3682,6 +4754,109 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .call()
     )
 
+    crop_map_view = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("crop_map_view")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query="SELECT lon, lat - (0.0 / 2.0) / ppd AS lat,\n       MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd\nFROM (\n  SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,\n         MIN(880.0 / (x1 - x0), (440.0 - 0.0) / (y1 - y0)) AS ppd\n  FROM (\n    SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,\n           MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,\n           MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,\n           MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1\n    FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n  )\n)\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("crop_map_view") or {}),
+        )
+        .call()
+    )
+
+    crop_map_lon = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("crop_map_lon")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=crop_map_view, column_name="lon", **(params.get("crop_map_lon") or {})
+        )
+        .call()
+    )
+
+    crop_map_lat = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("crop_map_lat")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=crop_map_view, column_name="lat", **(params.get("crop_map_lat") or {})
+        )
+        .call()
+    )
+
+    crop_map_zoom = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("crop_map_zoom")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=crop_map_view, column_name="zoom", **(params.get("crop_map_zoom") or {})
+        )
+        .call()
+    )
+
+    crop_map_outside = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("crop_map_outside")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query="SELECT printf('%d %s fall%s outside the map area, more than about 20 km beyond the conservancy boundary.',\n              n, CASE WHEN n = 1 THEN 'report' ELSE 'reports' END, CASE WHEN n = 1 THEN 's' ELSE '' END) AS \"Note\"\nFROM (\n  SELECT COUNT(*) AS n\n  FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x,\n               CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y\n        FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w\n              FROM df WHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL))\n  WHERE x BETWEEN 33 AND 42 AND y BETWEEN -5 AND 5\n  AND NOT (x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n)\nWHERE n > 0\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("crop_map_outside") or {}),
+        )
+        .call()
+    )
+
     crop_points = (
         task(apply_sql_query)
         .validate()
@@ -3696,7 +4871,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            query="SELECT MIN(geometry) AS geometry,\n       COUNT(*) AS \"Reports\",\n       CASE WHEN COUNT(*) > 1 THEN 12 ELSE 7 END AS size_px,\n       CASE MAX(rk) WHEN 1 THEN '<1 acre' WHEN 2 THEN '1-5 acres' WHEN 3 THEN '5-10 acres'\n              WHEN 4 THEN '>10 acres' ELSE 'Not recorded' END AS \"Extent\",\n       group_concat(item, ' | ') AS \"Crop\",\n       group_concat(sp, ' | ') AS \"Species responsible\",\n       group_concat(dt, ' | ') AS \"Date\"\nFROM (\n  SELECT geometry, sp, dt, item, CASE\n             WHEN ext IS NULL OR TRIM(ext) = '' THEN 0\n             WHEN ext LIKE '%<%' THEN 1\n             WHEN ext LIKE '1%5%' THEN 2\n             WHEN ext LIKE '5%10%' THEN 3\n             WHEN ext LIKE '%>%' THEN 4\n             ELSE 0 END AS rk,\n         printf('%.3f %.3f', CAST(substr(wkt, 1, instr(wkt, ' ') - 1) AS REAL),\n                             CAST(substr(wkt, instr(wkt, ' ') + 1) AS REAL)) AS cell\n  FROM (\n    SELECT geometry, species_h AS sp, substr(report_time, 1, 10) AS dt,\n           json_extract(event_details, '$.\"Extent of damage\"') AS ext,\n           COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(\n             CAST(json_extract(event_details, '$.\"Type of crop\"') AS TEXT),\n             '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), ''), 'Not recorded') AS item,\n           TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS wkt\n    FROM df\n    WHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL\n  )\n)\nGROUP BY cell\n",
+            query="SELECT geometry,\n       CASE WHEN ext IS NULL OR TRIM(ext) = '' THEN 'Not recorded'\n            WHEN ext LIKE '%<%' THEN '<1 acre'\n            WHEN ext LIKE '1%5%' THEN '1-5 acres'\n            WHEN ext LIKE '5%10%' THEN '5-10 acres'\n            WHEN ext LIKE '%>%' THEN '>10 acres'\n            ELSE 'Not recorded' END AS \"Extent\",\n       item AS \"Crop\", sp AS \"Species responsible\", dt AS \"Date\"\nFROM (\n  SELECT geometry, species_h AS sp, substr(report_time, 1, 10) AS dt,\n         json_extract(event_details, '$.\"Extent of damage\"') AS ext,\n         COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(\n           CAST(json_extract(event_details, '$.\"Type of crop\"') AS TEXT),\n           '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), ''), 'Not recorded') AS item\n  FROM df\n  WHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL\n)\n",
             columns=None,
             sanitize=True,
             **(params.get("crop_points") or {}),
@@ -3748,9 +4923,8 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         )
         .partial(
             layer_style={
-                "get_radius": "size_px",
+                "get_radius": 7.0,
                 "radius_units": "pixels",
-                "radius_scale": 1.0,
                 "fill_color_column": "crop_color",
                 "get_line_color": "#ffffff",
                 "stroked": True,
@@ -3762,76 +4936,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "color_column": "crop_color",
                 "title": "Extent of damage",
             },
-            tooltip_columns=[
-                "Reports",
-                "Crop",
-                "Extent",
-                "Species responsible",
-                "Date",
-            ],
+            tooltip_columns=["Crop", "Extent", "Species responsible", "Date"],
             **(params.get("crop_layer") or {}),
         )
         .mapvalues(argnames=["geodataframe"], argvalues=crop_cmap)
-    )
-
-    crop_size_key_pt = (
-        task(apply_sql_query)
-        .validate()
-        .set_task_instance_id("crop_size_key_pt")
-        .handle_errors()
-        .with_tracing()
-        .skipif(
-            conditions=[
-                any_is_empty_df,
-                any_dependency_skipped,
-            ],
-            unpack_depth=1,
-        )
-        .partial(
-            df=events_indexed,
-            query="SELECT geometry FROM df\nWHERE is_conflict = 1 AND event_type = 'crop_damage' AND geometry IS NOT NULL\nLIMIT 1\n",
-            columns=None,
-            sanitize=True,
-            **(params.get("crop_size_key_pt") or {}),
-        )
-        .call()
-    )
-
-    crop_size_key = (
-        task(create_point_layer)
-        .validate()
-        .set_task_instance_id("crop_size_key")
-        .handle_errors()
-        .with_tracing()
-        .skipif(
-            conditions=[
-                any_is_empty_df,
-                any_dependency_skipped,
-                all_geometry_are_none,
-            ],
-            unpack_depth=1,
-        )
-        .partial(
-            geodataframe=crop_size_key_pt,
-            layer_style={
-                "get_radius": 0.0,
-                "radius_units": "pixels",
-                "get_fill_color": "#525252",
-                "stroked": False,
-                "opacity": 0.0,
-            },
-            legend={
-                "title": "Point size",
-                "labels": [
-                    "Small point: one report",
-                    "Large point: two or more reports within about 100 m",
-                ],
-                "colors": ["#525252", "#525252"],
-            },
-            tooltip_columns=[],
-            **(params.get("crop_size_key") or {}),
-        )
-        .call()
     )
 
     crop_map_layers = (
@@ -3847,10 +4955,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             ],
             unpack_depth=1,
         )
-        .partial(
-            static_layers=[boundary_layer, crop_size_key],
-            **(params.get("crop_map_layers") or {}),
-        )
+        .partial(static_layers=boundary_layer, **(params.get("crop_map_layers") or {}))
         .mapvalues(argnames=["grouped_layers"], argvalues=crop_layer)
     )
 
@@ -3875,9 +4980,9 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             legend_style={"placement": "top-right", "title": "Legend"},
             max_zoom=15,
             view_state={
-                "longitude": 36.98,
-                "latitude": 0.53,
-                "zoom": 10.0,
+                "longitude": crop_map_lon,
+                "latitude": crop_map_lat,
+                "zoom": crop_map_zoom,
                 "pitch": 0,
                 "bearing": 0,
             },
@@ -3940,6 +5045,111 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .call()
     )
 
+    infra_map_view = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("infra_map_view")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query="SELECT lon, lat - (0.0 / 2.0) / ppd AS lat,\n       MIN(10.49, ln(ppd * 360.0 / 512.0) / ln(2.0)) AS zoom, ppd\nFROM (\n  SELECT (x0 + x1) / 2.0 AS lon, (y0 + y1) / 2.0 AS lat,\n         MIN(880.0 / (x1 - x0), (440.0 - 0.0) / (y1 - y0)) AS ppd\n  FROM (\n    SELECT MAX(36.67738, MIN(36.85738, COALESCE(MIN(x), 36.85738)) - 0.018) AS x0,\n           MAX(0.25648, MIN(0.43648, COALESCE(MIN(y), 0.43648)) - 0.018) AS y0,\n           MIN(37.23089, MAX(37.05089, COALESCE(MAX(x), 37.05089)) + 0.018) AS x1,\n           MIN(0.74583, MAX(0.56583, COALESCE(MAX(y), 0.56583)) + 0.018) AS y1\n    FROM (SELECT x, y FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x, CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w FROM df WHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL)) WHERE x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n  )\n)\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("infra_map_view") or {}),
+        )
+        .call()
+    )
+
+    infra_map_lon = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("infra_map_lon")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=infra_map_view, column_name="lon", **(params.get("infra_map_lon") or {})
+        )
+        .call()
+    )
+
+    infra_map_lat = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("infra_map_lat")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=infra_map_view, column_name="lat", **(params.get("infra_map_lat") or {})
+        )
+        .call()
+    )
+
+    infra_map_zoom = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("infra_map_zoom")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=infra_map_view,
+            column_name="zoom",
+            **(params.get("infra_map_zoom") or {}),
+        )
+        .call()
+    )
+
+    infra_map_outside = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("infra_map_outside")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_is_empty_df,
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=events_indexed,
+            query="SELECT printf('%d %s fall%s outside the map area, more than about 20 km beyond the conservancy boundary.',\n              n, CASE WHEN n = 1 THEN 'report' ELSE 'reports' END, CASE WHEN n = 1 THEN 's' ELSE '' END) AS \"Note\"\nFROM (\n  SELECT COUNT(*) AS n\n  FROM (SELECT CAST(substr(w, 1, instr(w, ' ') - 1) AS REAL) AS x,\n               CAST(substr(w, instr(w, ' ') + 1) AS REAL) AS y\n        FROM (SELECT TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS w\n              FROM df WHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL))\n  WHERE x BETWEEN 33 AND 42 AND y BETWEEN -5 AND 5\n  AND NOT (x BETWEEN 36.67738 AND 37.23089 AND y BETWEEN 0.25648 AND 0.74583)\n)\nWHERE n > 0\n",
+            columns=None,
+            sanitize=True,
+            **(params.get("infra_map_outside") or {}),
+        )
+        .call()
+    )
+
     infra_points = (
         task(apply_sql_query)
         .validate()
@@ -3954,7 +5164,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             unpack_depth=1,
         )
         .partial(
-            query="SELECT MIN(geometry) AS geometry,\n       COUNT(*) AS \"Reports\",\n       CASE WHEN COUNT(*) > 1 THEN 12 ELSE 7 END AS size_px,\n       CASE MAX(rk) WHEN 1 THEN 'Low' WHEN 2 THEN 'Medium' WHEN 3 THEN 'High'\n              ELSE 'Not recorded' END AS \"Extent\",\n       group_concat(item, ' | ') AS \"Property\",\n       group_concat(sp, ' | ') AS \"Species responsible\",\n       group_concat(dt, ' | ') AS \"Date\"\nFROM (\n  SELECT geometry, sp, dt, item, CASE\n             WHEN ext IS NULL OR TRIM(ext) = '' THEN 0\n             WHEN LOWER(ext) LIKE 'low%' THEN 1\n             WHEN LOWER(ext) LIKE 'med%' THEN 2\n             WHEN LOWER(ext) LIKE 'high%' THEN 3\n             ELSE 0 END AS rk,\n         printf('%.3f %.3f', CAST(substr(wkt, 1, instr(wkt, ' ') - 1) AS REAL),\n                             CAST(substr(wkt, instr(wkt, ' ') + 1) AS REAL)) AS cell\n  FROM (\n    SELECT geometry, species_h AS sp, substr(report_time, 1, 10) AS dt,\n           json_extract(event_details, '$.\"Extent of damage\"') AS ext,\n           COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(\n             CAST(json_extract(event_details, '$.\"Type of Property\"') AS TEXT),\n             '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), ''), 'Not recorded') AS item,\n           TRIM(REPLACE(REPLACE(CAST(geometry AS TEXT), 'POINT (', ''), ')', '')) AS wkt\n    FROM df\n    WHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL\n  )\n)\nGROUP BY cell\n",
+            query="SELECT geometry,\n       CASE WHEN ext IS NULL OR TRIM(ext) = '' THEN 'Not recorded'\n            WHEN LOWER(ext) LIKE 'low%' THEN 'Low'\n            WHEN LOWER(ext) LIKE 'med%' THEN 'Medium'\n            WHEN LOWER(ext) LIKE 'high%' THEN 'High'\n            ELSE 'Not recorded' END AS \"Extent\",\n       item AS \"Property\", sp AS \"Species responsible\", dt AS \"Date\"\nFROM (\n  SELECT geometry, species_h AS sp, substr(report_time, 1, 10) AS dt,\n         json_extract(event_details, '$.\"Extent of damage\"') AS ext,\n         COALESCE(NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(\n           CAST(json_extract(event_details, '$.\"Type of Property\"') AS TEXT),\n           '\",\"', ', '), '[\"', ''), '\"]', ''), '[]', '')), ''), 'Not recorded') AS item\n  FROM df\n  WHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL\n)\n",
             columns=None,
             sanitize=True,
             **(params.get("infra_points") or {}),
@@ -4005,9 +5215,8 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         )
         .partial(
             layer_style={
-                "get_radius": "size_px",
+                "get_radius": 7.0,
                 "radius_units": "pixels",
-                "radius_scale": 1.0,
                 "fill_color_column": "infra_color",
                 "get_line_color": "#ffffff",
                 "stroked": True,
@@ -4019,76 +5228,10 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "color_column": "infra_color",
                 "title": "Extent of damage",
             },
-            tooltip_columns=[
-                "Reports",
-                "Property",
-                "Extent",
-                "Species responsible",
-                "Date",
-            ],
+            tooltip_columns=["Property", "Extent", "Species responsible", "Date"],
             **(params.get("infra_layer") or {}),
         )
         .mapvalues(argnames=["geodataframe"], argvalues=infra_cmap)
-    )
-
-    infra_size_key_pt = (
-        task(apply_sql_query)
-        .validate()
-        .set_task_instance_id("infra_size_key_pt")
-        .handle_errors()
-        .with_tracing()
-        .skipif(
-            conditions=[
-                any_is_empty_df,
-                any_dependency_skipped,
-            ],
-            unpack_depth=1,
-        )
-        .partial(
-            df=events_indexed,
-            query="SELECT geometry FROM df\nWHERE is_conflict = 1 AND event_type = 'infrastructure_damage' AND geometry IS NOT NULL\nLIMIT 1\n",
-            columns=None,
-            sanitize=True,
-            **(params.get("infra_size_key_pt") or {}),
-        )
-        .call()
-    )
-
-    infra_size_key = (
-        task(create_point_layer)
-        .validate()
-        .set_task_instance_id("infra_size_key")
-        .handle_errors()
-        .with_tracing()
-        .skipif(
-            conditions=[
-                any_is_empty_df,
-                any_dependency_skipped,
-                all_geometry_are_none,
-            ],
-            unpack_depth=1,
-        )
-        .partial(
-            geodataframe=infra_size_key_pt,
-            layer_style={
-                "get_radius": 0.0,
-                "radius_units": "pixels",
-                "get_fill_color": "#525252",
-                "stroked": False,
-                "opacity": 0.0,
-            },
-            legend={
-                "title": "Point size",
-                "labels": [
-                    "Small point: one report",
-                    "Large point: two or more reports within about 100 m",
-                ],
-                "colors": ["#525252", "#525252"],
-            },
-            tooltip_columns=[],
-            **(params.get("infra_size_key") or {}),
-        )
-        .call()
     )
 
     infra_map_layers = (
@@ -4104,10 +5247,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             ],
             unpack_depth=1,
         )
-        .partial(
-            static_layers=[boundary_layer, infra_size_key],
-            **(params.get("infra_map_layers") or {}),
-        )
+        .partial(static_layers=boundary_layer, **(params.get("infra_map_layers") or {}))
         .mapvalues(argnames=["grouped_layers"], argvalues=infra_layer)
     )
 
@@ -4132,9 +5272,9 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             legend_style={"placement": "top-right", "title": "Legend"},
             max_zoom=15,
             view_state={
-                "longitude": 36.98,
-                "latitude": 0.53,
-                "zoom": 10.0,
+                "longitude": infra_map_lon,
+                "latitude": infra_map_lat,
+                "zoom": infra_map_zoom,
                 "pitch": 0,
                 "bearing": 0,
             },
@@ -4353,6 +5493,63 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
         .mapvalues(argnames=["df"], argvalues=events_grouped)
     )
 
+    ret_bar_ytop_v = (
+        task(apply_sql_query)
+        .validate()
+        .set_task_instance_id("ret_bar_ytop_v")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            query='SELECT MAX(5.0, COALESCE(MAX(t), 0)) * 1.15 AS ytop FROM (SELECT "Species responsible" AS k, MAX(SUM("Carried out"), SUM("Threatened")) AS t FROM df GROUP BY 1)\n',
+            columns=None,
+            sanitize=True,
+            **(params.get("ret_bar_ytop_v") or {}),
+        )
+        .mapvalues(argnames=["df"], argvalues=ret_by_species)
+    )
+
+    ret_bar_ytop_all = (
+        task(merge_df)
+        .validate()
+        .set_task_instance_id("ret_bar_ytop_all")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=2,
+        )
+        .partial(iterables=ret_bar_ytop_v, **(params.get("ret_bar_ytop_all") or {}))
+        .call()
+    )
+
+    ret_bar_ytop = (
+        task(dataframe_column_max)
+        .validate()
+        .set_task_instance_id("ret_bar_ytop")
+        .handle_errors()
+        .with_tracing()
+        .skipif(
+            conditions=[
+                any_dependency_skipped,
+            ],
+            unpack_depth=1,
+        )
+        .partial(
+            df=ret_bar_ytop_all,
+            column_name="ytop",
+            **(params.get("ret_bar_ytop") or {}),
+        )
+        .call()
+    )
+
     ret_bar = (
         task(draw_bar_chart)
         .validate()
@@ -4388,7 +5585,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                 "showlegend": True,
                 "legend_title": "Retaliation",
                 "xaxis": {"title": "Species responsible"},
-                "yaxis": {"title": "Conflict events"},
+                "yaxis": {"title": "Conflict events", "range": [0, ret_bar_ytop]},
             },
             **(params.get("ret_bar") or {}),
         )
@@ -4646,6 +5843,11 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                         },
                     },
                     {
+                        "item_type": "table",
+                        "key": "event_map_outside",
+                        "value": evt_map_outside,
+                    },
+                    {
                         "item_type": "image",
                         "key": "species_bar",
                         "value": species_bar_html,
@@ -4724,6 +5926,11 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                         },
                     },
                     {
+                        "item_type": "table",
+                        "key": "wildlife_map_outside",
+                        "value": wl_map_outside,
+                    },
+                    {
                         "item_type": "image",
                         "key": "predation_bar",
                         "value": pred_bar_html,
@@ -4758,6 +5965,11 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                             "device_scale_factor": 1.0,
                             "timeout": 120000,
                         },
+                    },
+                    {
+                        "item_type": "table",
+                        "key": "predation_map_outside",
+                        "value": pred_map_outside,
                     },
                     {
                         "item_type": "image",
@@ -4844,6 +6056,11 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                         },
                     },
                     {
+                        "item_type": "table",
+                        "key": "crop_map_outside",
+                        "value": crop_map_outside,
+                    },
+                    {
                         "item_type": "image",
                         "key": "infra_map",
                         "value": infra_map_html,
@@ -4854,6 +6071,11 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
                             "device_scale_factor": 1.0,
                             "timeout": 120000,
                         },
+                    },
+                    {
+                        "item_type": "table",
+                        "key": "infra_map_outside",
+                        "value": infra_map_outside,
                     },
                     {
                         "item_type": "image",

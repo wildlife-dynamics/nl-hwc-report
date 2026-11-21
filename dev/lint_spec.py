@@ -212,6 +212,10 @@ def main() -> int:
         "gather_dashboard",
         "persist_grouped_dfs_for_results_download",
         "ecoscope_workflows_ext_custom.tasks.results.create_docx",
+        # merge_df's one argument IS a keyed iterable: it concatenates every
+        # view's frame into one (the count-axis tops, so all views share one
+        # y range).
+        "merge_df",
     }
     grouped = {
         t.get("id")
