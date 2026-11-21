@@ -51,7 +51,7 @@ environments:
       linux-64-linux-4-4-0:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-8_kmp_llvm.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/aiohttp-3.14.5-py312h8b7ec3f_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/linux-64/argon2-cffi-bindings-26.1.0-py312h5cc1888_2.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/argon2-cffi-bindings-26.1.0-py312h5cc1888_3.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/arpack-3.9.1-nompi_hf03ea27_102.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/arro3-compute-0.9.1-py312h9f92c4b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/arro3-core-0.9.1-py312h9f92c4b_0.conda
@@ -599,7 +599,7 @@ environments:
       linux-aarch64-linux-4-4-0:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/_openmp_mutex-4.5-20_gnu.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/aiohttp-3.14.5-py312he7c6268_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/argon2-cffi-bindings-26.1.0-py312h84d9e0c_2.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/argon2-cffi-bindings-26.1.0-py312h84d9e0c_3.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/arpack-3.9.1-nompi_h6fc4d3a_102.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/arro3-compute-0.9.1-py312hf1b621f_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/arro3-core-0.9.1-py312hf1b621f_0.conda
@@ -1397,7 +1397,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.2-pyh5ded981_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/_openmp_mutex-4.5-8_kmp_llvm.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/aiohttp-3.14.5-py312h9d40a6d_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/osx-64/argon2-cffi-bindings-26.1.0-py312h6ea13a3_2.conda
+      - conda: https://conda.anaconda.org/conda-forge/osx-64/argon2-cffi-bindings-26.1.0-py312h6ea13a3_3.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/arpack-3.9.1-nompi_hdfe9103_102.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/arro3-compute-0.9.1-py312h397144c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/arro3-core-0.9.1-py312h397144c_0.conda
@@ -1919,7 +1919,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.2-pyh5ded981_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/_openmp_mutex-4.5-8_kmp_llvm.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/aiohttp-3.14.5-py312h05c94ff_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/osx-arm64/argon2-cffi-bindings-26.1.0-py312ha053593_2.conda
+      - conda: https://conda.anaconda.org/conda-forge/osx-arm64/argon2-cffi-bindings-26.1.0-py312ha053593_3.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/arpack-3.9.1-nompi_h1f29f7c_102.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/arro3-compute-0.9.1-py312h0c5ae6b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/arro3-core-0.9.1-py312h0c5ae6b_0.conda
@@ -2434,7 +2434,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.2-pyh5ded981_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/_openmp_mutex-4.5-20_gnu.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/aiohttp-3.14.5-py312h6fa65f5_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/win-64/argon2-cffi-bindings-26.1.0-py312he06e257_2.conda
+      - conda: https://conda.anaconda.org/conda-forge/win-64/argon2-cffi-bindings-26.1.0-py312he06e257_3.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/arro3-compute-0.9.1-py312hb0142fd_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/arro3-core-0.9.1-py312hb0142fd_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/arro3-io-0.9.1-py312hb0142fd_0.conda
@@ -4395,9 +4395,9 @@ packages:
   run_exports: {}
   size: 1240901
   timestamp: 1794518206962
-- conda: https://conda.anaconda.org/conda-forge/linux-64/argon2-cffi-bindings-26.1.0-py312h5cc1888_2.conda
-  sha256: c8bc12162019d6f07427729971ba6e6ed425a3b45ed5927406bc2dc7a11b0e95
-  md5: ee98bca1934072b6628eaf59359b056a
+- conda: https://conda.anaconda.org/conda-forge/linux-64/argon2-cffi-bindings-26.1.0-py312h5cc1888_3.conda
+  sha256: 6d582d874edbbc8aac832e87f05c5be7964366abde4731df8793779e2613dbff
+  md5: 62e72b5f38b6b831770cdb4b3eaab426
   depends:
   - __glibc >=2.17,<3.0.a0
   - cffi >=1.0.1
@@ -4407,8 +4407,8 @@ packages:
   license: MIT
   license_family: MIT
   run_exports: {}
-  size: 33857
-  timestamp: 1789743380166
+  size: 33851
+  timestamp: 1795291021730
 - conda: https://conda.anaconda.org/conda-forge/linux-64/arpack-3.9.1-nompi_hf03ea27_102.conda
   sha256: 6d71343420292132be0192ddd962b308f7b8a0a0630d1db83fb9d65e8167c6ce
   md5: e09af397232ef1070e0b6cbf4c64aacb
@@ -9826,9 +9826,9 @@ packages:
   run_exports: {}
   size: 1238860
   timestamp: 1794518209863
-- conda: https://conda.anaconda.org/conda-forge/linux-aarch64/argon2-cffi-bindings-26.1.0-py312h84d9e0c_2.conda
-  sha256: d98160f4dace8475ea9842b36dd30a39fb5cff69845f432d15083de76fbe6d42
-  md5: 727020b5cc8abcef01315553a183cf63
+- conda: https://conda.anaconda.org/conda-forge/linux-aarch64/argon2-cffi-bindings-26.1.0-py312h84d9e0c_3.conda
+  sha256: 363c3403164c0d5d8b2a10f13182b050f2bb6b05cceaec11ced0752e08c67d00
+  md5: 4ee72e69184c99c44039146a1011ea6c
   depends:
   - cffi >=1.0.1
   - libgcc >=15
@@ -9837,8 +9837,8 @@ packages:
   license: MIT
   license_family: MIT
   run_exports: {}
-  size: 34578
-  timestamp: 1789743339155
+  size: 34919
+  timestamp: 1795291009221
 - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/arpack-3.9.1-nompi_h6fc4d3a_102.conda
   sha256: bc95bdc29ce23bb575c8b30b66c55d2b1a1d381928dd83d090a24cdb5770679b
   md5: ebb4856a15ce86a9aecb365f6fe8e3e0
@@ -18652,9 +18652,9 @@ packages:
   run_exports: {}
   size: 1200741
   timestamp: 1794518255411
-- conda: https://conda.anaconda.org/conda-forge/osx-64/argon2-cffi-bindings-26.1.0-py312h6ea13a3_2.conda
-  sha256: 0316aaece6cba63efd8645520d1bc5a9c9440fd453a78f8ffbdb7c92f2993408
-  md5: 60758ef035f251cfb72a04d04bdf0764
+- conda: https://conda.anaconda.org/conda-forge/osx-64/argon2-cffi-bindings-26.1.0-py312h6ea13a3_3.conda
+  sha256: 915168cc50a37f75e8ae15591aef96da4b4d9748a6b18069f8cd3ae5961a6fc9
+  md5: e5304d11c1a78cb1f0d298aa122aa20e
   depends:
   - __osx >=11.0
   - cffi >=1.0.1
@@ -18663,8 +18663,8 @@ packages:
   license: MIT
   license_family: MIT
   run_exports: {}
-  size: 31258
-  timestamp: 1789743783875
+  size: 31505
+  timestamp: 1795291517606
 - conda: https://conda.anaconda.org/conda-forge/osx-64/arpack-3.9.1-nompi_hdfe9103_102.conda
   sha256: fbb8ab189e4700bbb856abdee6f71172628004c009cc276e44ffa3fdd2599985
   md5: 4fbf1ddfe3784263c01b7c33e6a6a3f7
@@ -23515,9 +23515,9 @@ packages:
   run_exports: {}
   size: 1189141
   timestamp: 1794518266614
-- conda: https://conda.anaconda.org/conda-forge/osx-arm64/argon2-cffi-bindings-26.1.0-py312ha053593_2.conda
-  sha256: 1aeea67028b6e4e5669bfbde76ea599d717b26757839815a42567300188dbbd8
-  md5: 0c522a1a5c994274dbedd6a4fd7740d0
+- conda: https://conda.anaconda.org/conda-forge/osx-arm64/argon2-cffi-bindings-26.1.0-py312ha053593_3.conda
+  sha256: f0a802b019009689c286b8d781c1df4e786e45a05c99a39e5fe0eafc72738ec9
+  md5: 866634d3e4dafbe53edab109de70b78b
   depends:
   - __osx >=11.0
   - cffi >=1.0.1
@@ -23526,8 +23526,8 @@ packages:
   license: MIT
   license_family: MIT
   run_exports: {}
-  size: 31909
-  timestamp: 1789743380252
+  size: 32032
+  timestamp: 1795291015134
 - conda: https://conda.anaconda.org/conda-forge/osx-arm64/arpack-3.9.1-nompi_h1f29f7c_102.conda
   sha256: 314fb780a811d1bcd31b34266016d1d49e754e37a476f8b18d8ea81599865444
   md5: 7da333ca69131caf002baf360f5de7f9
@@ -28299,9 +28299,9 @@ packages:
   run_exports: {}
   size: 1170869
   timestamp: 1794518253408
-- conda: https://conda.anaconda.org/conda-forge/win-64/argon2-cffi-bindings-26.1.0-py312he06e257_2.conda
-  sha256: 59ba8ea4be38d291b6fa82d5df2873d51c7ece6ffdea97f2091b310b2edf65d1
-  md5: 2fd49876c884972ece179d10da8b97fb
+- conda: https://conda.anaconda.org/conda-forge/win-64/argon2-cffi-bindings-26.1.0-py312he06e257_3.conda
+  sha256: b92a0d4227825286575bd8691113cdc2523ff8cdde99e518b5fd6f36da277244
+  md5: 2581fd240ba47eb7a85b5752900b0ee5
   depends:
   - cffi >=1.0.1
   - python >=3.12,<3.13.0a0
@@ -28312,8 +28312,8 @@ packages:
   license: MIT
   license_family: MIT
   run_exports: {}
-  size: 34007
-  timestamp: 1789743444851
+  size: 33916
+  timestamp: 1795291033832
 - conda: https://conda.anaconda.org/conda-forge/win-64/arro3-compute-0.9.1-py312hb0142fd_0.conda
   sha256: 7698406e85dff00fb12c4496ede8743071a62eae575f13873f0e4f9a5da3270b
   md5: da8f11cd85dbe3a48459835f2b092665

@@ -1200,7 +1200,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             conditions=[
                 any_dependency_skipped,
             ],
-            unpack_depth=1,
+            unpack_depth=2,
         )
         .partial(
             iterables=trend_chart_ytop_v, **(params.get("trend_chart_ytop_all") or {})
@@ -1389,7 +1389,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             conditions=[
                 any_dependency_skipped,
             ],
-            unpack_depth=1,
+            unpack_depth=2,
         )
         .partial(
             iterables=species_bar_ytop_v, **(params.get("species_bar_ytop_all") or {})
@@ -2044,7 +2044,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             conditions=[
                 any_dependency_skipped,
             ],
-            unpack_depth=1,
+            unpack_depth=2,
         )
         .partial(iterables=cas_bar_ytop_v, **(params.get("cas_bar_ytop_all") or {}))
         .call()
@@ -2328,7 +2328,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             conditions=[
                 any_dependency_skipped,
             ],
-            unpack_depth=1,
+            unpack_depth=2,
         )
         .partial(iterables=wl_bar_ytop_v, **(params.get("wl_bar_ytop_all") or {}))
         .call()
@@ -2917,7 +2917,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             conditions=[
                 any_dependency_skipped,
             ],
-            unpack_depth=1,
+            unpack_depth=2,
         )
         .partial(iterables=pred_bar_ytop_v, **(params.get("pred_bar_ytop_all") or {}))
         .call()
@@ -3099,7 +3099,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             conditions=[
                 any_dependency_skipped,
             ],
-            unpack_depth=1,
+            unpack_depth=2,
         )
         .partial(
             iterables=pred_pred_bar_ytop_v,
@@ -3889,7 +3889,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             conditions=[
                 any_dependency_skipped,
             ],
-            unpack_depth=1,
+            unpack_depth=2,
         )
         .partial(iterables=dmg_trend_ytop_v, **(params.get("dmg_trend_ytop_all") or {}))
         .call()
@@ -4068,7 +4068,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             conditions=[
                 any_dependency_skipped,
             ],
-            unpack_depth=1,
+            unpack_depth=2,
         )
         .partial(iterables=crop_bar_ytop_v, **(params.get("crop_bar_ytop_all") or {}))
         .call()
@@ -4263,7 +4263,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             conditions=[
                 any_dependency_skipped,
             ],
-            unpack_depth=1,
+            unpack_depth=2,
         )
         .partial(
             iterables=dmg_extent_bar_ytop_v,
@@ -4448,7 +4448,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             conditions=[
                 any_dependency_skipped,
             ],
-            unpack_depth=1,
+            unpack_depth=2,
         )
         .partial(iterables=tree_bar_ytop_v, **(params.get("tree_bar_ytop_all") or {}))
         .call()
@@ -4625,7 +4625,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             conditions=[
                 any_dependency_skipped,
             ],
-            unpack_depth=1,
+            unpack_depth=2,
         )
         .partial(iterables=infra_bar_ytop_v, **(params.get("infra_bar_ytop_all") or {}))
         .call()
@@ -5524,7 +5524,7 @@ def main(params: dict[str, Any], validate_params_schema: bool = True):
             conditions=[
                 any_dependency_skipped,
             ],
-            unpack_depth=1,
+            unpack_depth=2,
         )
         .partial(iterables=ret_bar_ytop_v, **(params.get("ret_bar_ytop_all") or {}))
         .call()
