@@ -329,15 +329,26 @@ def main():
     print(f"  months: {', '.join(f'{m} ({len(g)})' for m, g in months.items())}\n")
 
     outputs = {}
+    by_month = {}  # tid -> {month: output}, so a query mapped over another
+    # query's per-month output (the count-axis tops) runs on that output
     for tid, t in TASKS.items():
         if t["task"] != "apply_sql_query" or tid == "events_prepared":
             continue
         src = json.dumps(t)
-        frames = {"(all)": indexed} if "events_indexed.return" in src else months
+        upstream = re.findall(
+            r"workflow\.(\w+)\.return", json.dumps(t.get("mapvalues", {}))
+        )
+        if "events_indexed.return" in src:
+            frames = {"(all)": indexed}
+        elif upstream and upstream[0] in by_month:
+            frames = by_month[upstream[0]]
+        else:
+            frames = months
         for m, g in frames.items():
             try:
                 out = apply_sql_query(g, query(tid))
                 outputs.setdefault(tid, out)
+                by_month.setdefault(tid, {})[m] = out
                 if m == next(iter(frames)):
                     report(
                         tid,
